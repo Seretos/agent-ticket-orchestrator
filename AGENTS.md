@@ -2,6 +2,10 @@
 
 Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), two subagents (`bundler`, `clarifier`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
 
+## Installed per project; the project id comes from the repo
+
+This plugin is enabled in each project's own `.claude/settings.json`, next to `agent-autonomous-developer` and `agent-project-issues`, and is invoked from that project's main checkout. Both skills resolve the `project_id` from `git remote get-url origin` → `owner/repo` → the `list_projects` entry with that `path`; an explicit `project_id=` argument overrides. There is deliberately **no ecosystem-level orchestration here** (release chains, dependency bumps across repos, marketplace publishing) — that is a later, separate layer that would call these skills per project. Keep this plugin ignorant of other projects.
+
 ## Contracts an agent won't infer from the tree
 
 ### The lower plugin's entry point (the only thing this plugin knows about it)
@@ -42,7 +46,7 @@ An `Agent` subagent inherits the **parent session's** MCP connections — this p
 
 ### The launch lock
 
-Two `claude` processes starting at the same moment race on `~/.claude.json` and can corrupt it (upstream anthropics/claude-code #28813, #28847; observed here as `fix: serialize Claude session launches` in the meta-repo). `scripts/start-package-session.sh` takes `mkdir "$HOME/.claude/.launch-lock"` (atomic on NTFS and POSIX), writes its PID inside, breaks a lock whose owner is dead or older than 60 s, and holds it **only across the start** — until the stream shows the first `system` record or 25 s elapsed — never across the run. Cross-project `run … project_id=all` is sequential for the same reason (and because parallel worktrees race on shared services).
+Two `claude` processes starting at the same moment race on `~/.claude.json` and can corrupt it (upstream anthropics/claude-code #28813, #28847; observed here as `fix: serialize Claude session launches` in the meta-repo). `scripts/start-package-session.sh` takes `mkdir "$HOME/.claude/.launch-lock"` (atomic on NTFS and POSIX), writes its PID inside, breaks a lock whose owner is dead or older than 60 s, and holds it **only across the start** — until the stream shows the first `system` record or 25 s elapsed — never across the run. Inside a project everything is sequential for the same reason (and because parallel worktrees race on shared services).
 
 ### Two skills, two supervision modes
 

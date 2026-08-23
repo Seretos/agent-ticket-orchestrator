@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — takes every open package in the board's Todo column, gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, then merges the CI-green PR and moves the card to Done (or escalates to Question). Sequential, no human in the loop, may run for hours. Invoke as "/agent-ticket-orchestrator:run project_id=<id>" or "project_id=all".
+description: Unattended night-shift runner — takes every open package in the board's Todo column, gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, then merges the CI-green PR and moves the card to Done (or escalates to Question). Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -20,15 +20,20 @@ carry any project content in your context.
 
 ## Inputs
 
-- `project_id` — **required**. Either one project id, or the literal `all`.
-  With `all`, call `list_projects()` and iterate every project that has a
-  board with a logical `Todo` column (`list_board_columns` succeeds and
-  contains `Todo`); skip the rest with one line each in the report.
-  **Cross-project processing is sequential** — one project finishes before the
-  next begins — and **inside a project there is no parallelism** either: one
-  package, one worktree, one process at a time. Parallel `claude` starts race
-  on `~/.claude.json` and parallel worktrees race on shared services; the
-  night is long enough.
+- `project_id` — **optional; resolved from the repository you are in.** This
+  plugin is installed per project and runs from that project's main checkout.
+  Resolution, in this order: an explicit `project_id=<id>` argument wins;
+  otherwise run `git remote get-url origin`, reduce it to `owner/repo`
+  (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
+  → `owner/repo`), and take the single `list_projects()` entry whose `path`
+  equals it. No match or more than one → STOP and say which repo you resolved
+  and what `list_projects` returned — never pick one. Thread the resolved id
+  into every MCP call and every subagent prompt.
+- **Inside a project there is no parallelism**: one package, one worktree,
+  one process at a time. Parallel `claude` starts race on `~/.claude.json`
+  and parallel worktrees race on shared services; the night is long enough.
+  Orchestration *across* projects (release chains, version bumps) is not this
+  plugin's job — it runs one project's board.
 - Optional `budget_usd` per package process (default `15`).
 
 ## Preconditions (per project)
@@ -155,7 +160,7 @@ comment; add exactly one line —
 ### 4. Final report
 
 One table: `package · result (Done / Question / Review / merge-failed) · PR ·
-rounds (from the last event's `rounds`) · attempts`. Per project when `all`.
+rounds (from the last event's `rounds`) · attempts`.
 
 The run is **SUCCESS only if every package reached Done**. Anything else is
 **PARTIAL** with the list of what is not Done and where it sits. Never
@@ -203,6 +208,6 @@ workflow for the human.
 - **Board writes are the status channel; comments only where this skill says**
   (failure summary before → Question, the one-line escalation, the
   merge-not-permitted / merge-failed notes).
-- **Project id is a parameter** — no cwd inference. Thread it into every call.
-- **Sequential.** One project at a time, one package at a time, one process
-  at a time.
+- **Project id comes from the repo's `origin`** (or an explicit argument) and is
+  threaded into every call; it is never guessed from a name.
+- **Sequential.** One package at a time, one process at a time.

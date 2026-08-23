@@ -1,7 +1,7 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Supervised, interactive pre-flight for the board — bundles open Backlog tickets into work packages (epics for collisions or effort batches) and clarifies every open question with the human present, then moves clear packages to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Invoke as "/agent-ticket-orchestrator:gatekeeper project_id=<id>". Requires a human at the keyboard.
+description: Supervised, interactive pre-flight for the board — bundles open Backlog tickets into work packages (epics for collisions or effort batches) and clarifies every open question with the human present, then moves clear packages to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). Requires a human at the keyboard.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
@@ -19,10 +19,15 @@ is not answered here ends up in the `Question` column tomorrow morning.
 
 ## Inputs
 
-- `project_id` — **required, never guessed.** If it is missing or ambiguous,
-  resolve candidates via `search_projects` / `list_projects` and confirm with
-  the user before touching anything. Thread it into every MCP call and every
-  subagent prompt.
+- `project_id` — **optional; resolved from the repository you are in.** This
+  plugin is installed per project and runs from that project's main checkout.
+  Resolution, in this order: an explicit `project_id=<id>` argument wins;
+  otherwise run `git remote get-url origin`, reduce it to `owner/repo`
+  (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
+  → `owner/repo`), and take the single `list_projects()` entry whose `path`
+  equals it. No match or more than one → STOP and say which repo you resolved
+  and what `list_projects` returned — never pick one. Thread the resolved id
+  into every MCP call and every subagent prompt.
 - The project's `local_path` (from `list_projects`) — handed to the subagents
   so they can look at the code.
 
