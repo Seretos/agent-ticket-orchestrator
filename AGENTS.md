@@ -1,12 +1,12 @@
 # agent-ticket-orchestrator
 
-Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), three subagents (`bundler`, `clarifier`, `package-session`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
+Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), two subagents (`bundler`, `clarifier`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
 
 ## Contracts an agent won't infer from the tree
 
 ### The lower plugin's entry point (the only thing this plugin knows about it)
 
-`package-session` starts, with cwd = the prepared worktree:
+the `run` skill starts, from its own main turn, with cwd = the prepared worktree:
 
 ```
 claude -p "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs> base_branch=<default>" \
@@ -34,19 +34,15 @@ Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge
 
 ### Why state lives in the ticket, not in the return value
 
-A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: `package-session` returns a courtesy JSON, and `run` re-reads `list_comments(order="desc")` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
+A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: the process exit code is a courtesy, and `run` re-reads `list_comments(order="desc")` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
 
-### Why `package-session` is a CLI process, not an `Agent` subagent
+### Why the package session is a CLI process started by the skill itself — not an `Agent` subagent, not a wrapper
 
-An `Agent` subagent inherits the **parent session's** MCP connections — this plugin's Serena project, this session's tool set — not the target project's. The lower plugin needs the target worktree's own `CLAUDE.md`, `.serena`, `.claude/settings.json`, plugin set and MCPs, which only a fresh `claude` process with cwd = worktree gets. The wrapper agent exists only to own one Bash background process and one `Monitor` wait; that is why it is granted almost nothing (see its "What you are NOT given" section). Its one `Agent`-level property that matters: it is dispatched **unnamed and synchronously** (`run_in_background: false`), because a named/background spawn delivers on a `SendMessage` mailbox nobody listens to (#60, #88). Retry = fresh dispatch with `attempt+1`, never resume.
+An `Agent` subagent inherits the **parent session's** MCP connections — this plugin's Serena project, this session's tool set — not the target project's. The lower plugin needs the target worktree's own `CLAUDE.md`, `.serena`, `.claude/settings.json`, plugin set and MCPs, which only a fresh `claude` process with cwd = worktree gets. And there is deliberately **no wrapper subagent** around that process either: a task-notification for a backgrounded Bash command reaches the **main** session, while a subagent that ends its turn "to wait" is terminated, not suspended (lower plugin #83/#88) — a wrapper that has to stay in-turn for hours is the exact shape that went silent before. So `run` starts the process with `Bash(run_in_background: true)` in its own turn and is woken by the harness when it ends. The orchestrator never reads `stream.jsonl`; state comes from the ticket. Retry = a fresh start with `attempt+1`, never a resume.
 
 ### The launch lock
 
-Two `claude` processes starting at the same moment race on `~/.claude.json` and can corrupt it (upstream anthropics/claude-code #28813, #28847; observed here as `fix: serialize Claude session launches` in the meta-repo). `package-session` takes `mkdir "$HOME/.claude/.launch-lock"` (atomic on NTFS and POSIX), writes its PID inside, breaks a lock whose owner is dead or older than 60 s, and holds it **only across the start** — until the stream shows the first `system` record or 25 s elapsed — never across the run. Cross-project `run … project_id=all` is sequential for the same reason (and because parallel worktrees race on shared services).
-
-### Waiting inside a subagent
-
-A task-notification for a backgrounded Bash command reaches the **main** session, not reliably a subagent; a subagent that ends its turn "to wait" is terminated, not suspended (lower plugin #83/#88). `package-session` therefore arms a persistent `Monitor` on the exit marker and stays in-turn for hours. The `run` skill itself waits on nothing but that dispatch returning; CI polling lives in the lower plugin's own main turn.
+Two `claude` processes starting at the same moment race on `~/.claude.json` and can corrupt it (upstream anthropics/claude-code #28813, #28847; observed here as `fix: serialize Claude session launches` in the meta-repo). the start command takes `mkdir "$HOME/.claude/.launch-lock"` (atomic on NTFS and POSIX), writes its PID inside, breaks a lock whose owner is dead or older than 60 s, and holds it **only across the start** — until the stream shows the first `system` record or 25 s elapsed — never across the run. Cross-project `run … project_id=all` is sequential for the same reason (and because parallel worktrees race on shared services).
 
 ### Two skills, two supervision modes
 

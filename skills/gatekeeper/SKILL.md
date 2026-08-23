@@ -13,7 +13,7 @@ then hand-picks what the night shift gets by moving Planned → Todo. You never
 do that last move: Todo is the one column only a human writes.
 
 You are the **only place in the whole ecosystem that may call
-`AskUserQuestion`**. Everything downstream (`run`, `package-session`, the
+`AskUserQuestion`**. Everything downstream (`run`, the lower plugin's process, the
 lower plugin's processes) runs with no human in the loop, so any question that
 is not answered here ends up in the `Question` column tomorrow morning.
 
@@ -179,7 +179,7 @@ packages you want processed tonight from Planned to Todo by hand, then start
 - **Never move anything to Todo.** Planned is your terminal column. Todo is
   written by humans only.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
-  dispatch `package-session`. You prepare; `run` executes.
+  start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
   relations, labels, clarification comments, and the Backlog → Planned move.
 - **Never close or re-title original tickets.**

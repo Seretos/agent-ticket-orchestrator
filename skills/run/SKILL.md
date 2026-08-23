@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — takes every open package in the board's Todo column, gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process via the package-session agent, then merges the CI-green PR and moves the card to Done (or escalates to Question). Sequential, no human in the loop, may run for hours. Invoke as "/agent-ticket-orchestrator:run project_id=<id>" or "project_id=all".
+description: Unattended night-shift runner — takes every open package in the board's Todo column, gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, then merges the CI-green PR and moves the card to Done (or escalates to Question). Sequential, no human in the loop, may run for hours. Invoke as "/agent-ticket-orchestrator:run project_id=<id>" or "project_id=all".
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -73,24 +73,45 @@ the human released. Process in board order (oldest first).
   and take `path` from the returned record. Remember the `id` for removal,
   but re-fetch it via `environment_list` if you ever removed and re-created.
 
-**b. Dispatch the session.** Unnamed, synchronous, fresh:
+**b. Start the package session — yourself, from this turn.** No subagent
+wraps the process: a task-notification for a backgrounded Bash command is
+delivered to the **main** session, and a subagent that ends its turn to wait
+is terminated, not suspended (lower plugin #83/#88). So the `claude -p`
+process is started by **you**, with `Bash(run_in_background: true)`, and the
+harness wakes you when it ends. One Bash call does all of it — run directory,
+launch lock, start, lock release, wait:
 
+```bash
+RUNDIR="${CLAUDE_SCRATCHPAD:-$(mktemp -d)}/pkg-<id>-attempt-<n>-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RUNDIR"; echo "RUNDIR=$RUNDIR"
+# --- launch lock: concurrent `claude` starts corrupt ~/.claude.json (anthropics/claude-code #28813, #28847)
+LOCK="$HOME/.claude/.launch-lock"
+for i in $(seq 1 120); do
+  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; break; fi
+  OWNER=$(cat "$LOCK/pid" 2>/dev/null); AGE=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || echo 0) ))
+  if { [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null; } || [ "$AGE" -gt 60 ]; then rm -rf "$LOCK"; continue; fi
+  sleep 0.5
+done
+[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || { echo "could not take launch lock"; exit 3; }
+# --- start, cwd = worktree, exactly the contract entry point
+cd "<worktree_path>" && claude -p "/agent-autonomous-developer:process-ticket package=<id> project_id=<project_id> worktree_path=<worktree_path> base_branch=<default branch> attempt=<n>"   --permission-mode bypassPermissions   --disallowedTools AskUserQuestion   --output-format stream-json --verbose   --max-budget-usd <budget>   > "$RUNDIR/stream.jsonl" 2> "$RUNDIR/stderr.txt" &
+PID=$!
+# hold the lock only until the process has read ~/.claude.json (first system line) or 25 s
+for i in $(seq 1 50); do grep -q '"type":"system"' "$RUNDIR/stream.jsonl" 2>/dev/null && break; kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+rm -rf "$LOCK"
+wait "$PID"; EXIT=$?; echo "$EXIT" > "$RUNDIR/exit_code"; echo "EXIT=$EXIT"; exit "$EXIT"
 ```
-Agent(
-  subagent_type="package-session",
-  description="package #<id> attempt <n>",
-  run_in_background: false,
-  prompt="project_id=<project_id> package=<id> worktree_path=<abs path>
-          base_branch=<default branch> attempt=<n> budget_usd=<budget>"
-)
-```
 
-It returns only when the `claude -p` process has ended, with a compact JSON
-(`outcome`, `exit_code`, `last_event`, `pr`, `log_path`). Do not parse
-anything else out of its reply.
+Run it with `run_in_background: true`, then **stop and wait for the
+completion notification**. Do not poll the ticket, do not read the stream, do
+not start a second package. CI rounds of up to 45 minutes and three review
+rounds all happen inside that process; hours are normal. When the
+notification arrives, note `EXIT` and `RUNDIR` — they are informational. You
+never read `stream.jsonl` into your context (it is the project's raw work;
+the orchestrator stays free of it); you may `tail -n 3 stderr.txt` to
+classify a crash.
 
-**c. Read the ticket, react.** The session's return is informational; the
-truth is the ticket. Call
+**c. Read the ticket, react.** The exit code is informational; the truth is
+the ticket. Call
 
 ```
 list_comments(project_id, ticket_id=<package>, order="desc", limit=20)
@@ -104,11 +125,11 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>)` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. |
 | `blocked` | Set aside: append to `blocked_list`, leave the card in **Doing**, `worktree_remove` (the branch is pushed if a PR exists; if not, the retry starts fresh anyway). Continue with the next package. |
-| `failed`, or no terminal event (`outcome: crashed`/`budget`, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict`) | **One** fresh re-dispatch of `package-session` with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, `log_path`s), → **Question**, `worktree_remove`. |
+| `failed`, or no terminal event (non-zero exit, budget exhausted, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict`) | **One** fresh start (step b) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
 A `pr-opened` or `ci-red` event seen *while the process is still alive* is
-not terminal — but you never see that state, because `package-session` only
-returns after the process has ended. CI waiting is the lower plugin's job,
+not terminal — but you never see that state, because you only act after
+the process has ended. CI waiting is the lower plugin's job,
 inside its own process. If the latest event after the process ended is
 `pr-opened` or `ci-red`, the process died mid-CI-loop: that is the "none"
 row above.
@@ -148,11 +169,11 @@ the PR belongs to the lower plugin and describes one package only.
 ## Waiting rule
 
 This skill never waits on a human and never polls CI. The only thing it ever
-waits on is `package-session` returning — which happens exactly when the
-`claude -p` process ended. Everything slower than that (CI rounds of up to 45
+waits on is the completion notification of the `claude -p` process it
+started in step 2b. Everything slower than that (CI rounds of up to 45
 minutes, three review rounds) happens *inside* that process. So a single
 package can occupy you for hours; that is fine. Do not start a second
-`package-session` to "use the time".
+package to "use the time".
 
 ## Why "retry" is never a valid Question
 
@@ -176,7 +197,7 @@ workflow for the human.
 - **Unnamed dispatches only.** Every `Agent` call is synchronous and without
   `name`; never `SendMessage`, never resume. Retry = fresh dispatch with
   `attempt+1`.
-- **One writer per ticket during a session.** While a `package-session` is
+- **One writer per ticket during a session.** While a package session is
   running, you do not comment on or move that ticket. The lower plugin writes
   the events; you react afterwards.
 - **Never edit code**, never run tests, never open or push branches yourself.
