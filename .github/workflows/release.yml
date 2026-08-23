@@ -75,6 +75,8 @@ jobs:
           cp -a skills/. "$STAGE/skills/"
           # agents/ is a release artifact: the skills dispatch these subagent types.
           cp -a agents/. "$STAGE/agents/"
+          # scripts/ is a release artifact: the run skill calls start-package-session.sh via ${CLAUDE_PLUGIN_ROOT}.
+          mkdir -p "$STAGE/scripts" && cp -a scripts/. "$STAGE/scripts/"
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           # assets/ goes onto the orphan release branch so the dispatch

@@ -62,6 +62,18 @@ the human released. Process in board order (oldest first).
 
 ### 2. Per package, sequentially
 
+**Why strictly one at a time, merge before next:** every package's PR is
+merged by you on `ci-green` *before* the next package's worktree is created,
+and that worktree is cut from the **post-merge** default branch
+(`worktree_create` fetches `origin` first). So at no point do two open PRs
+coexist, and a later package can never conflict with an earlier one — the
+conflict that a human would otherwise inherit after merging PR 1 of 3 cannot
+arise. This guarantee only holds while `run` merges itself; with
+`pulls.merge: false` the packages pile up in **Review** and the human who
+merges them by hand also inherits the conflicts. That trade is the human's,
+not this skill's — it is stated here so nobody "fixes" it by parallelising.
+
+
 **a. Claim + worktree.**
 
 - `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>})`.
@@ -76,39 +88,23 @@ the human released. Process in board order (oldest first).
 **b. Start the package session — yourself, from this turn.** No subagent
 wraps the process: a task-notification for a backgrounded Bash command is
 delivered to the **main** session, and a subagent that ends its turn to wait
-is terminated, not suspended (lower plugin #83/#88). So the `claude -p`
-process is started by **you**, with `Bash(run_in_background: true)`, and the
-harness wakes you when it ends. One Bash call does all of it — run directory,
-launch lock, start, lock release, wait:
+is terminated, not suspended (lower plugin #83/#88). So **you** start the
+process, with `Bash(run_in_background: true)`, through the bundled script —
+never by typing the `claude` command yourself:
 
-```bash
-RUNDIR="${CLAUDE_SCRATCHPAD:-$(mktemp -d)}/pkg-<id>-attempt-<n>-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RUNDIR"; echo "RUNDIR=$RUNDIR"
-# --- launch lock: concurrent `claude` starts corrupt ~/.claude.json (anthropics/claude-code #28813, #28847)
-LOCK="$HOME/.claude/.launch-lock"
-for i in $(seq 1 120); do
-  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; break; fi
-  OWNER=$(cat "$LOCK/pid" 2>/dev/null); AGE=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || echo 0) ))
-  if { [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null; } || [ "$AGE" -gt 60 ]; then rm -rf "$LOCK"; continue; fi
-  sleep 0.5
-done
-[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || { echo "could not take launch lock"; exit 3; }
-# --- start, cwd = worktree, exactly the contract entry point
-cd "<worktree_path>" && claude -p "/agent-autonomous-developer:process-ticket package=<id> project_id=<project_id> worktree_path=<worktree_path> base_branch=<default branch> attempt=<n>"   --permission-mode bypassPermissions   --disallowedTools AskUserQuestion   --output-format stream-json --verbose   --max-budget-usd <budget>   > "$RUNDIR/stream.jsonl" 2> "$RUNDIR/stderr.txt" &
-PID=$!
-# hold the lock only until the process has read ~/.claude.json (first system line) or 25 s
-for i in $(seq 1 50); do grep -q '"type":"system"' "$RUNDIR/stream.jsonl" 2>/dev/null && break; kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
-rm -rf "$LOCK"
-wait "$PID"; EXIT=$?; echo "$EXIT" > "$RUNDIR/exit_code"; echo "EXIT=$EXIT"; exit "$EXIT"
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" <project_id> <id> "<worktree_path>" <default branch> <attempt> <budget_usd>
 ```
 
-Run it with `run_in_background: true`, then **stop and wait for the
-completion notification**. Do not poll the ticket, do not read the stream, do
-not start a second package. CI rounds of up to 45 minutes and three review
-rounds all happen inside that process; hours are normal. When the
-notification arrives, note `EXIT` and `RUNDIR` — they are informational. You
-never read `stream.jsonl` into your context (it is the project's raw work;
-the orchestrator stays free of it); you may `tail -n 3 stderr.txt` to
-classify a crash.
+The script owns the mechanics (run directory, launch lock around the start,
+stream/stderr files, exit marker — see its header) and prints `RUNDIR=…`
+first and `EXIT=<code>` last. Then **stop and wait for the completion
+notification**. Do not poll the ticket, do not read the stream, do not start
+a second package. CI rounds of up to 45 minutes and three review rounds all
+happen inside that process; hours are normal. `EXIT` and `RUNDIR` are
+informational; you never read `stream.jsonl` into your context (the
+orchestrator stays free of project content) — `tail -n 3 "<RUNDIR>/stderr.txt"`
+is allowed to classify a crash.
 
 **c. Read the ticket, react.** The exit code is informational; the truth is
 the ticket. Call
@@ -125,7 +121,7 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>)` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. |
 | `blocked` | Set aside: append to `blocked_list`, leave the card in **Doing**, `worktree_remove` (the branch is pushed if a PR exists; if not, the retry starts fresh anyway). Continue with the next package. |
-| `failed`, or no terminal event (non-zero exit, budget exhausted, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict`) | **One** fresh start (step b) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
+| `failed`, or no terminal event (non-zero exit, budget exhausted, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict`) | **One** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
 A `pr-opened` or `ci-red` event seen *while the process is still alive* is
 not terminal — but you never see that state, because you only act after
