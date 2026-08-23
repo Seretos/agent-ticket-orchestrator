@@ -4,7 +4,7 @@ name: release
 #   1. Trigger via Actions tab -> "Run workflow" -> enter version (e.g. 0.0.1)
 #      or via CLI: gh workflow run release.yml -f version=0.0.1
 #   2. Workflow stamps version into plugin.json (in CI only), pushes an orphan
-#      release branch with install-ready files, creates the
+#      release branch with install-ready files (skills/, agents/, manifests), creates the
 #      agent-ticket-orchestrator--v{version} tag on that commit, and publishes a
 #      GitHub Release with the zip attached.
 #   3. The workflow then notifies agent-marketplace directly via
@@ -69,10 +69,12 @@ jobs:
         run: |
           STAGE="build/stage/agent-ticket-orchestrator"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/.claude-plugin" "$STAGE/.codex-plugin" "$STAGE/skills"
+          mkdir -p "$STAGE/.claude-plugin" "$STAGE/.codex-plugin" "$STAGE/skills" "$STAGE/agents"
           cp .claude-plugin/plugin.json "$STAGE/.claude-plugin/"
           cp .codex-plugin/plugin.json  "$STAGE/.codex-plugin/"
           cp -a skills/. "$STAGE/skills/"
+          # agents/ is a release artifact: the skills dispatch these subagent types.
+          cp -a agents/. "$STAGE/agents/"
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           # assets/ goes onto the orphan release branch so the dispatch
