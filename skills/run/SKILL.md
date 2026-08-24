@@ -34,7 +34,15 @@ carry any project content in your context.
   and parallel worktrees race on shared services; the night is long enough.
   Orchestration *across* projects (release chains, version bumps) is not this
   plugin's job — it runs one project's board.
-- Optional `budget_usd` per package process (default `15`).
+- Optional `model` for the package process (default `sonnet`), passed as
+  `ADEV_SESSION_MODEL=<model>` in front of the script call. The subagents inside
+  the package session pin their own models; this is only the session's own
+  orchestrating turn, which sequences phases, counts rounds, posts events and
+  drives git/PR/CI. Pinning it at all is the point — an unpinned session
+  inherits whatever `/model` the human last left set.
+- **No dollar budget.** There is no `budget_usd` and no `--max-budget-usd`; the
+  platform's own session limits are the only ceiling. See *Why there is no
+  dollar budget* below.
 
 ## Preconditions (per project)
 
@@ -98,7 +106,7 @@ process, with `Bash(run_in_background: true)`, through the bundled script —
 never by typing the `claude` command yourself:
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" <project_id> <id> "<worktree_path>" <default branch> <attempt> <budget_usd>
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" <project_id> <id> "<worktree_path>" <default branch> <attempt>
 ```
 
 The script owns the mechanics (run directory, launch lock around the start,
@@ -126,7 +134,7 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>)` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. |
 | `blocked` | Set aside: append to `blocked_list`, leave the card in **Doing**, `worktree_remove` (the branch is pushed if a PR exists; if not, the retry starts fresh anyway). Continue with the next package. |
-| `failed`, or no terminal event (non-zero exit, budget exhausted, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict`) | **One** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
+| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **One** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
 A `pr-opened` or `ci-red` event seen *while the process is still alive* is
 not terminal — but you never see that state, because you only act after
@@ -175,6 +183,41 @@ started in step 2b. Everything slower than that (CI rounds of up to 45
 minutes, three review rounds) happens *inside* that process. So a single
 package can occupy you for hours; that is fine. Do not start a second
 package to "use the time".
+
+## Why there is no dollar budget
+
+`--max-budget-usd` used to cap each package session at $15. It is gone, and it
+should not come back in that shape. Four reasons, all measured on the
+2026-08-23/24 runs (32 sessions, 14 packages, five projects):
+
+1. **It regulated the wrong quantity.** The figure Claude Code reports is API
+   *list price*, which is not what a subscription is billed. Those 32 sessions
+   came to $251 list and consumed roughly 23 percentage points of a weekly
+   subscription limit — so the $15 cap was about 1.4% of that week's budget,
+   not the third it reads like. A ceiling denominated in a currency nobody in
+   the loop is actually spending cannot be set correctly by anyone.
+2. **It did not hold.** The check only lands between turns: one package
+   finished at **$18.40 against a $15 cap** (+23%), while exactly one of the
+   32 sessions ever tripped the abort. A ceiling that is 23% porous in one
+   direction and near-inert in the other buys no safety.
+3. **It aborted at the most expensive possible moment.** The spend is front-
+   loaded — context, planning, two critic gates, test-first implementation —
+   so an abort after the implementation and before the PR discards everything
+   already paid for, and the retry pays for orientation again. Of the $251,
+   **$152 (61%) went on attempts that never reached `ci-green`**; the cheapest
+   successful attempts were the ones that inherited a worktree with committed
+   work in it. Forcing an abort there is the most costly behaviour available.
+4. **It manufactured Questions the section below forbids.** A card whose
+   comment says "budget was too small" leaves a human exactly one sensible
+   move — raise it and put the card back in Todo. That is a retry wearing a
+   decision's clothes.
+
+The platform's own session limits already stop a runaway, at a boundary the
+platform owns and enforces consistently. Cost control belongs in the pipeline's
+shape — fewer dead attempts, work committed so a retry resumes instead of
+restarting, the session's own turn on a model that fits what it does — not in a
+second ceiling that fires mid-flight. If a package genuinely never terminates,
+that is a bug in the lower plugin's round caps, and it is fixed there.
 
 ## Why "retry" is never a valid Question
 

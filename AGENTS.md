@@ -15,7 +15,7 @@ the `run` skill starts, from its own main turn, with cwd = the prepared worktree
 ```
 claude -p "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs> base_branch=<default>" \
   --permission-mode bypassPermissions --disallowedTools AskUserQuestion \
-  --output-format stream-json --verbose --max-budget-usd <cap> > <rundir>/stream.jsonl 2> <rundir>/stderr.txt
+  --output-format stream-json --verbose --model <model> > <rundir>/stream.jsonl 2> <rundir>/stderr.txt
 ```
 
 A *work package* is a single ticket id or an epic id (= all its `list_hierarchy` children, one branch, one PR with one `Closes #<n>` per child). The lower plugin never creates worktrees or branches, never touches columns, never selects tickets, never asks a human. This plugin never writes code. Changing either side's half of that split is a contract change for both repositories.
@@ -43,6 +43,14 @@ A headless `claude -p` returns "process ended" plus prose. Reconstructing state 
 ### Why the package session is a CLI process started by the skill itself — not an `Agent` subagent, not a wrapper
 
 An `Agent` subagent inherits the **parent session's** MCP connections — this plugin's Serena project, this session's tool set — not the target project's. The lower plugin needs the target worktree's own `CLAUDE.md`, `.serena`, `.claude/settings.json`, plugin set and MCPs, which only a fresh `claude` process with cwd = worktree gets. And there is deliberately **no wrapper subagent** around that process either: a task-notification for a backgrounded Bash command reaches the **main** session, while a subagent that ends its turn "to wait" is terminated, not suspended (lower plugin #83/#88) — a wrapper that has to stay in-turn for hours is the exact shape that went silent before. So `run` starts the process with `Bash(run_in_background: true)` in its own turn — via `scripts/start-package-session.sh`, which owns the launch lock, the stream files and the exit marker so the skill never reproduces those mechanics from prose — and is woken by the harness when it ends. The orchestrator never reads `stream.jsonl`; state comes from the ticket. Retry = a fresh start with `attempt+1`, never a resume.
+
+### No dollar budget on the package session; the model is pinned instead
+
+`--max-budget-usd 15` was removed, and the two facts behind that removal are the kind that get re-litigated by anyone who sees an unbounded `claude -p` and reaches for a cap.
+
+**The dollar figure is not the money.** `total_cost_usd` and `--max-budget-usd` are API *list price*, computed from token counts against the published price list, regardless of whether the account is billed per-token or by subscription. Over the 2026-08-23/24 runs — 32 sessions, 14 packages, five projects — the batch came to $251 list and consumed roughly 23 percentage points of a weekly subscription limit; the $15 cap was therefore ~1.4% of that week, not the third the number suggests. The cap also did not hold (one package finished at $18.40 against it, because the check only lands between turns) and it fired at the worst possible point: spend is front-loaded into context, planning and the critic gates, so aborting after the implementation and before the PR discards all of it. 61% of that $251 went on attempts that never reached `ci-green`. Cost control lives in the pipeline's shape — fewer dead attempts, work pushed so a retry resumes (lower plugin `#95`), the right model per role — not in a mid-flight ceiling. The platform's session limits are the runaway stop, and `skills/run/SKILL.md` → *Why there is no dollar budget* is the long form.
+
+**`--model` is a correctness property, not a preference.** Without it the headless session inherits whatever `/model` the human last left set in an unrelated interactive session, so identical packages cost different amounts for reasons invisible to everyone in the run. In the same batch the main turn was **33% of a package's cost on Sonnet and 52% on Opus** — the split falls exactly on the day the human forgot to switch back. The lower plugin's six subagents already pin their models in frontmatter (`planner: opus`, the rest `sonnet`); the session's own turn was the last unpinned one. It sequences phases, counts rounds, posts events and drives git/PR/CI, delegating every judgement that needs a bigger model to a subagent that asks for one — hence the `sonnet` default, overridable per run with `ADEV_SESSION_MODEL`.
 
 ### The launch lock
 
