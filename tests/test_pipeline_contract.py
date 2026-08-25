@@ -18,6 +18,8 @@ RUN = REPO_ROOT / "skills" / "run" / "SKILL.md"
 GATEKEEPER = REPO_ROOT / "skills" / "gatekeeper" / "SKILL.md"
 AGENTS_DIR = REPO_ROOT / "agents"
 TRIAGE = AGENTS_DIR / "triage.md"
+LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 
 def _read(p: pathlib.Path) -> str:
@@ -131,3 +133,42 @@ def test_clarifier_no_longer_receives_inlined_answers():
     clarifier = AGENTS_DIR / "clarifier.md"
     text = _read(clarifier)
     assert "chosen option` pairs, verbatim" not in text
+
+
+# --- CI trigger (agent-ticket-orchestrator#4) and release changelog (#5) ---
+
+def test_lint_workflow_is_pull_request_only():
+    # No YAML dependency here on purpose -- lint.yml's own CI step only
+    # installs pytest, and this repo has no other Python dependency yet.
+    text = _read(LINT_WORKFLOW)
+    m = re.search(r"^on:\s*\n((?:^[ \t]+\S.*\n?)*)", text, re.MULTILINE)
+    assert m, "could not find the on: trigger block"
+    on_block = m.group(1)
+    assert "pull_request" in on_block
+    assert "push" not in on_block, (
+        "lint.yml must trigger on pull_request only -- a push trigger "
+        "duplicates every PR run for the same commit (#4)"
+    )
+
+
+def test_release_workflow_untouched_by_the_lint_trigger_change():
+    text = _read(RELEASE_WORKFLOW)
+    assert "workflow_dispatch" in text
+
+
+def test_release_workflow_sends_a_changelog_field():
+    text = _read(RELEASE_WORKFLOW)
+    assert "changelog" in text
+    assert "gh release view" in text  # reads back the notes already generated, never a second computation
+
+
+def test_release_workflow_builds_the_dispatch_payload_with_jq_not_a_bare_heredoc():
+    text = _read(RELEASE_WORKFLOW)
+    assert "jq -n" in text
+    # the old unquoted `-d @- <<EOF ... ${VAR} ...` pattern must be gone for
+    # the dispatch step specifically -- a multi-line changelog would break it.
+    # A real heredoc use is an unindented `<<EOF` starting a shell line, not
+    # this pattern mentioned in an explanatory comment (`# ... <<EOF ...`).
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    assert not re.search(r"^\s*[^#\n]*<<EOF", dispatch_step, re.MULTILINE)
+    assert '-d "$PAYLOAD"' in dispatch_step

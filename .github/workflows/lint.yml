@@ -1,8 +1,10 @@
 name: lint
 
+# Pull-request only, deliberately no push trigger: code lands on main only
+# through a PR (branch protection enforces this), so a push trigger would
+# only ever produce a second, identical run for the same commit a PR run
+# already covers. See #4.
 on:
-  push:
-    branches: ["**"]
   pull_request:
 
 permissions:
