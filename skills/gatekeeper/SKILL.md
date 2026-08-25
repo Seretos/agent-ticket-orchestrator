@@ -1,21 +1,27 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Supervised, interactive pre-flight for the board — bundles open Backlog tickets into work packages (epics for collisions or effort batches) and clarifies every open question with the human present, then moves clear packages to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). Requires a human at the keyboard.
+description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package stays in Backlog and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run. Clear packages move to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
 
-You prepare the board for an unattended `run`. With the human sitting next to
-you, you turn the raw **Backlog** into **work packages** whose every open
-question is answered, and you move those packages to **Planned**. The human
-then hand-picks what the night shift gets by moving Planned → Todo. You never
-do that last move: Todo is the one column only a human writes.
+You prepare the board for an unattended `run`. You turn the raw **Backlog**
+into **work packages** and move every package whose questions are settled to
+**Planned**. The human then hand-picks what the night shift gets by moving
+Planned → Todo. You never do that last move: Todo is the one column only a
+human writes.
 
-You are the **only place in the whole ecosystem that may call
-`AskUserQuestion`**. Everything downstream (`run`, the lower plugin's process, the
-lower plugin's processes) runs with no human in the loop, so any question that
-is not answered here ends up in the `Question` column tomorrow morning.
+**Nothing in this skill blocks on a chat answer.** `AskUserQuestion` is not
+part of this flow, for the same reason it is not granted to `run` or the
+lower plugin: everything downstream runs unattended, and a skill that stops
+mid-list waiting for a reply defeats its own purpose the moment nobody is
+watching at that exact moment. A bundling decision is applied and reported,
+never confirmed first (see Step 2). A clarification question that cannot be
+answered from ticket, comments and code is posted **on the package ticket**
+and the package stays in Backlog — you move on to the next candidate
+immediately. The human answers in the ticket, at their own pace, and the
+next gatekeeper run picks the answer up.
 
 ## Inputs
 
@@ -85,11 +91,16 @@ It returns a JSON block:
 ] }
 ```
 
-Present the proposal to the user via **AskUserQuestion** — one compact list
-(`package · reason · tickets · one-line rationale`) with the options *accept
-all* / *edit* (let them split, merge, or drop packages by id). Iterate until
-they accept. Every candidate must end up in exactly one package; a ticket the
-user wants to skip stays in Backlog untouched.
+**Apply the proposal directly — no confirmation round.** Every candidate the
+bundler placed in a package is materialised as that package (see
+*Materialise multi-ticket packages as epics*, below); nothing here is held
+for a human's accept/edit. Step 5's report is where the
+cut becomes visible, after the fact, not before it. If a package's cut turns
+out to be wrong once a human looks, that is a Backlog-time fix, not a reason
+to make every run wait on a confirmation it almost always accepts anyway: an
+epic can be split back apart by hand (remove the `parent` relations, move
+the children back) before it ever leaves Backlog or Planned — the epic and
+its children are ordinary tickets, not a one-way transformation.
 
 **Why bundle first:** clarification answers are posted on the *package*
 ticket. If you clarified first and bundled afterwards, the answers would sit
@@ -130,33 +141,51 @@ Agent(
   subagent_type="clarifier",
   description="clarify package #<id>",
   prompt="project_id=<project_id> local_path=<local_path> package=#<id>\n
-          Children (if epic): <ids>\n
-          Previous answers (on re-dispatch): <Q<n> → chosen option, verbatim>"
+          Children (if epic): <ids>"
 )
 ```
+
+No answers are inlined into the prompt on this call — the `clarifier`'s own
+protocol already reads `list_comments` and treats an earlier
+`## Clarification needed (gatekeeper)` comment's replies as settled answers
+(`agents/clarifier.md`, "earlier clarification comments count as answers"),
+so a human's reply left on the ticket between gatekeeper runs is picked up
+without you doing anything special here.
 
 It ends with a status line:
 
 - `STATUS: CLEAR` → go to Step 4.
 - `STATUS: NEEDS_INPUT` → it carries a `## Open Questions` section
-  (`### Q<n>`, 2–4 options, one `*(recommended)*`). Put them to the user via
-  **AskUserQuestion** — one question per item, the recommended option marked.
-  Then:
-  1. Post the answers as **one** comment on the package ticket via
-     `add_comment(project_id, ticket_id=<package>, body=…)` — heading
-     `## Clarification (gatekeeper)`, then `Q<n> <title>: <chosen option> —
-     <one line why, if the user said>`. The MCP prepends `#ai-generated`; do
-     not add it yourself. Use real newlines.
-  2. Re-dispatch the clarifier (fresh, unnamed) with the answers inlined.
+  (`### Q<n>`, 2–4 options, one `*(recommended)*`). **Post it to the
+  ticket, do not ask in chat:**
 
-  Cap at **~4 rounds** per package. If it still returns `NEEDS_INPUT`, ask the
-  user once whether to proceed with the recommended options (post those as a
-  final comment and treat as CLEAR) or leave the package in Backlog.
+  ```
+  add_comment(project_id, ticket_id=<package>, body=…)
+  ```
+
+  heading `## Clarification needed (gatekeeper)`, then the `clarifier`'s
+  `## Open Questions` section verbatim. The MCP prepends `#ai-generated`; do
+  not add it yourself.
+
+  Leave the package in **Backlog** and move on to the **next** package
+  immediately — do not wait here. Record it in Step 5's report as "needs
+  answer — see ticket #<id>".
+
+  A **repeat pass** (this package already carries an earlier
+  `## Clarification needed (gatekeeper)` comment, and the human has since
+  replied to it) re-dispatches the `clarifier` exactly as above; it reads the
+  reply itself. If it comes back `NEEDS_INPUT` again with the *same*
+  questions unanswered, treat it as still Backlog and move on — nothing
+  changed, nothing to redo. Count the `## Clarification needed (gatekeeper)`
+  comments on the ticket (`list_comments`); at **4 or more**, add one line to
+  Step 5's report flagging the package as unusually hard to clarify — not a
+  cap, not a block, just a signal that it may need a different kind of
+  attention than another clarifier round.
 
 Questions the clarifier could have answered itself from ticket + code are its
-bug, not the user's job — if you notice it asking such things, note it in the
-report, but still put the question to the user rather than answering it
-yourself: you are not allowed to decide on the project's behalf either.
+bug, not something to post — if you notice it asking such things, note it in
+the report, but still post the question rather than answering it yourself:
+you are not allowed to decide on the project's behalf either.
 
 ## Step 4 — release to Planned
 
@@ -172,15 +201,22 @@ enumerates Todo only, so a child never gets dispatched on its own.
 
 ## Step 5 — report
 
-A short table: `package · kind (epic/single) · tickets · rounds · result
-(Planned / left in Backlog / skipped by user)`. Then one line: "Move the
-packages you want processed tonight from Planned to Todo by hand, then start
-`/agent-ticket-orchestrator:run project_id=<id>`."
+A short table: `package · kind (epic/single) · tickets · reason (bundler) ·
+result (Planned / needs answer — see ticket #<id>)`. Flag
+any package at 4+ `## Clarification needed (gatekeeper)` comments as
+unusually hard to clarify (see Step 3). Then one line: "Move the packages you
+want processed tonight from Planned to Todo by hand, then start
+`/agent-ticket-orchestrator:run project_id=<id>`." — plus, if any package
+needs an answer, "Answer the open questions above directly on their tickets,
+then run `/agent-ticket-orchestrator:gatekeeper` again to pick them up."
 
 ## Hard rules
 
-- **This is the only skill that may call `AskUserQuestion`.** Use it for
-  every decision; never decide taste questions yourself.
+- **No `AskUserQuestion`, anywhere in this skill.** A bundling decision is
+  applied and reported, not confirmed. A clarification question is posted on
+  the ticket, not asked in chat. Nothing here waits on a live reply.
+- **Never block on one package.** A package that needs a human answer stays
+  in Backlog and you move straight to the next candidate — see Step 3.
 - **Never move anything to Todo.** Planned is your terminal column. Todo is
   written by humans only.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
@@ -190,5 +226,7 @@ packages you want processed tonight from Planned to Todo by hand, then start
 - **Never close or re-title original tickets.**
 - **Bundle before clarify**, always.
 - **Subagents are unnamed and synchronous.** No `name`, no `SendMessage`, no
-  `run_in_background`. Re-dispatch with inlined context instead of resuming.
+  `run_in_background`. Re-dispatch fresh instead of resuming; the `clarifier`
+  reads its own answers back from the ticket, so nothing needs to be inlined
+  by hand on a repeat pass.
 - **Project id is a parameter.** Never infer it from cwd.

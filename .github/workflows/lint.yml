@@ -38,3 +38,8 @@ jobs:
                   print(f"::error::{path} frontmatter missing 'name' or 'description'"); sys.exit(1)
               print(f"{path}: OK")
           EOF
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          python3 -m pytest tests/ -v
