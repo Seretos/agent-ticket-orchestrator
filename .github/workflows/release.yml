@@ -170,28 +170,42 @@ jobs:
       - name: Dispatch to agent-marketplace
         shell: bash
         env:
-          GH_PAT:  ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
-          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT:   ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
+          VERSION:  ${{ inputs.version }}
         run: |
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
           TAG="${NAME}--v${VERSION}"
+
+          # Same notes already generated for the GitHub Release two steps
+          # above (`--generate-notes`) -- read them back rather than
+          # recomputing, so the two can never drift apart.
+          CHANGELOG=$(gh release view "$TAG" --repo "${{ github.repository }}" --json body -q .body)
+
+          # Built with jq, not spliced into an unquoted heredoc: the
+          # changelog is multi-line markdown that can contain backticks,
+          # quotes and newlines, any of which would break the old
+          # `curl -d @- <<EOF` pattern and silently drop the whole dispatch
+          # (agent-marketplace#235's contract note; the same thing already
+          # happened once with `tags`, see agent-marketplace@89aa850).
+          PAYLOAD=$(jq -n \
+            --arg name "$NAME" \
+            --arg desc "$DESC" \
+            --arg repo "${{ github.repository }}" \
+            --arg version "$VERSION" \
+            --arg ref "$TAG" \
+            --arg icon "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png" \
+            --arg description_url "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md" \
+            --arg changelog "$CHANGELOG" \
+            '{event_type: "plugin-release", client_payload: {
+              name: $name, description: $desc, repo: $repo, category: "skill",
+              version: $version, ref: $ref, icon: $icon,
+              description_url: $description_url, changelog: $changelog
+            }}')
+
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/Seretos/agent-marketplace/dispatches \
-            -d @- <<EOF
-          {
-            "event_type": "plugin-release",
-            "client_payload": {
-              "name":        "${NAME}",
-              "description": "${DESC}",
-              "repo":        "${{ github.repository }}",
-              "category":    "skill",
-              "version":     "${VERSION}",
-              "ref":         "${TAG}",
-              "icon":        "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png",
-              "description_url": "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md"
-            }
-          }
-          EOF
+            -d "$PAYLOAD"

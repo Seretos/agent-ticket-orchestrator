@@ -1,6 +1,6 @@
 # agent-ticket-orchestrator
 
-Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), two subagents (`bundler`, `clarifier`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
+Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), three subagents (`bundler`, `clarifier`, `triage`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
 
 ## Installed per project; the project id comes from the repo
 
@@ -27,18 +27,41 @@ The lower plugin posts comments on the **package ticket** (the epic when the pac
 ```
 <!-- adev:event v1
 event: <name>   package: <id>   attempt: <n>
+generation: 1/2
 rounds: plan-critic=1/3(1f,0i) test-critic=0/3 review=2/3(2f,0i) ci=1/3(0f,1i)
 pr: <number or empty>   ci_run: <id or empty>
 -->
 ```
 
-`rounds`: `<gate>=<used>/<cap>(<f>f,<i>i)` — `f` rounds ended with real findings, `i` rounds were lost to infrastructure; both count toward the cap. As of the lower plugin's Phase R (rebase-and-repair), `rounds` also carries a `rebase=<u>/3(<f>f,<i>i)` sub-field, `0/3` on a session that never entered Phase R; `run` reads `rounds` as opaque prose and does not need to parse it. Events, exhaustive: `started`, `plan-committed`, `plan-critic-verdict`, `tests-red`, `test-critic-verdict`, `tests-green` (local pre-filter only — never success), `review-verdict`, `pr-opened` (`pr` filled), `ci-red` (`ci_run` filled), and the three **terminal** ones: `ci-green` (the only success signal), `blocked` (needs a human decision; text = question, options, recommendation, what was checked), `failed` (terminal non-decision failure; text distinguishes findings vs infra). A process that ended without a terminal event counts as `failed`. The vocabulary is unchanged by Phase R — see the lower plugin's `AGENTS.md`, "Phase 0 orients on the branch instead of taking a parameter".
+`rounds`: `<gate>=<used>/<cap>(<f>f,<i>i)` — `f` rounds ended with real findings, `i` rounds were lost to infrastructure; both count toward the cap. As of the lower plugin's Phase R (rebase-and-repair), `rounds` also carries a `rebase=<u>/3(<f>f,<i>i)` sub-field, `0/3` on a session that never entered Phase R; `run` reads `rounds` as opaque prose and does not need to parse it. A separate `generation: <g>/2` field (2026-08-25) tracks the lower plugin's own replan mechanism — `1/2` unless a plan-critic/test-critic/review gate stagnated and triggered a fresh planner dispatch; `run` also reads this as opaque prose, purely informational. Events, exhaustive: `started`, `plan-committed`, `plan-critic-verdict`, `tests-red`, `test-critic-verdict`, `tests-green` (local pre-filter only — never success), `review-verdict`, `pr-opened`, `ci-red` (`ci_run` filled), `replan-triggered` (non-terminal — the lower plugin's own turn continues after it, see its `AGENTS.md`, "Round caps are progress-based, not just round-counted"), and the three **terminal** ones: `ci-green` (the only success signal), `blocked` (needs a human decision; text = question, options, recommendation, what was checked), `failed` (terminal non-decision failure; text distinguishes findings vs infra). A process that ended without a terminal event counts as `failed` (`replan-triggered` included — a process that dies mid-replan is exactly as unfinished as one that dies mid-review). The vocabulary is unchanged by Phase R — see the lower plugin's `AGENTS.md`, "Phase 0 orients on the branch instead of taking a parameter".
 
-Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge_pr` (verify `merged: true`), → Done, remove worktree · merge fails on a **conflict** (`mergeable_state: dirty`/`behind` or the GitLab equivalent) → one rebase-and-retry dispatch, same script, `attempt+1`; merges after that → Done, still conflicted → Question · merge fails on branch protection / permission / an unresolved state → unchanged: Review, `merge-failed`, human decides · `blocked` → set aside, re-dispatch once at end of run, still blocked → Question · `failed`/none → one fresh re-dispatch, still failed → Question with the failure summary. These are three **independent** retry budgets (one `failed` retry, one rebase retry, one `blocked` re-dispatch), not a shared counter — see `skills/run/SKILL.md`, "Merge outcomes are classified, and a conflict is a retry". The run succeeds only if every package reached Done; partial is reported as partial; no "not included" list in any PR, ever.
+Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge_pr` (verify `merged: true`), → Done, remove worktree · merge fails on a **conflict** (`mergeable_state: dirty`/`behind` or the GitLab equivalent) → one rebase-and-retry dispatch, same script, `attempt+1`; merges after that → Done, still conflicted → Question · merge fails on branch protection / permission / an unresolved state → unchanged: Review, `merge-failed`, human decides · `blocked` → triaged by a read-only subagent before it costs anything (answerable → answer posted, immediate re-dispatch; not answerable → Question right away) · `failed`/no terminal event → checked directly against the PR's actual CI/mergeability state first (a package that only died mid-CI-wait is not `failed`); only if that check does not resolve it, one fresh re-dispatch, still failed → Question with the failure summary. These are **independent** retry budgets (one `failed` retry, one rebase retry, one triage-driven re-dispatch), not a shared counter — see `skills/run/SKILL.md`, "Merge outcomes are classified, and a conflict is a retry". The run succeeds only if every package reached Done; partial is reported as partial; no "not included" list in any PR, ever.
 
 `run` also runs a **Step 0 pre-flight**, before enumerating Todo: any open `pkg/*` PR left over from an earlier run gets the same `ci-green` reaction if that is its latest event, so a package finished by an earlier night's run does not sit unmerged forever, blocking every worktree cut after it. And **Step 2a gates on the previous package** — it verifies with `list_prs` that the previous package actually cleared before cutting the next worktree, rather than assuming the "never two open PRs" guarantee held. Neither check aborts the run when it finds a problem; both record it and let the merge-outcome classification absorb the consequence. This closes the gap a real incident found (2026-08-24, `agent-web-tester`): a stale `Question` card kept a `ci-green` package unmerged, the next package's worktree was cut from the stale base anyway, and the eventual conflict had no path back except a human. Full account in `skills/run/SKILL.md`, "Merge outcomes are classified, and a conflict is a retry".
 
-`run` now calls `get_pr` and `list_prs` — it previously called neither. Both are read-only and need no permission beyond the project's existing read access; `merge_pr` still needs `pulls.merge`, unchanged.
+`run` calls `get_pr` and `list_prs` for the merge-outcome classification **and** for the pre-retry CI check (see below). Both are read-only and need no permission beyond the project's existing read access; `merge_pr` still needs `pulls.merge`, unchanged.
+
+### Waiting on CI is not a decision, and neither is a `blocked` event nobody tried to answer
+
+Two follow-on fixes to the same escalation philosophy, both in `skills/run/SKILL.md` at their
+point of use (`agent-ticket-orchestrator#7`, `#8`):
+
+- **The pre-retry CI check.** A process that ends `failed` or on a non-terminal event can simply
+  have died while its PR's gating CI was still running, or even after it had already finished
+  green — two independent incidents (`agent-worktree` #165, `agent-project-issues` #268) escalated
+  to Question on exactly that, one of them with both gating runs already green *before* the session
+  exited. `run` now checks `get_pr`/`list_pipeline_runs` directly before treating `failed`/no
+  terminal event as retry-worthy, and resolves the package (or waits one bounded extra look) instead
+  of spending the retry on a package that was never actually failed.
+- **`blocked` events are triaged, not always retried.** The old contract set every `blocked`
+  package aside and gave it exactly one full retry session at the very end of the run, unconditional
+  on whether a retry could plausibly change anything. A recorded incident (`agent-project-issues`
+  package #265) showed the `blocked` event's own text predicting the retry would be wasted, and a
+  human answered it from the ticket in seconds once they happened to look. The new `triage`
+  subagent (read-only, same escalation test the `clarifier` applies before a run even starts) reads
+  the question against ticket, code and comments: `ANSWERED` → the answer is posted as a comment
+  and the package is re-dispatched immediately (no waiting for other packages first); `ESCALATE` →
+  straight to Question, no retry spent. At most one triage attempt per package per run.
 
 ### Why state lives in the ticket, not in the return value
 
@@ -60,14 +83,23 @@ An `Agent` subagent inherits the **parent session's** MCP connections — this p
 
 Two `claude` processes starting at the same moment race on `~/.claude.json` and can corrupt it (upstream anthropics/claude-code #28813, #28847; observed here as `fix: serialize Claude session launches` in the meta-repo). `scripts/start-package-session.sh` takes `mkdir "$HOME/.claude/.launch-lock"` (atomic on NTFS and POSIX), writes its PID inside, breaks a lock whose owner is dead or older than 60 s, and holds it **only across the start** — until the stream shows the first `system` record or 25 s elapsed — never across the run. Inside a project everything is sequential for the same reason (and because parallel worktrees race on shared services).
 
-### Two skills, two supervision modes
+### Two skills, neither blocks on `AskUserQuestion`
 
-| skill | human | may `AskUserQuestion` | writes |
-|---|---|---|---|
-| `gatekeeper` | present, interactive | **yes — the only place in the ecosystem** | epics, `parent` relations, `epic` label, clarification comments, Backlog → Planned |
-| `run` | absent, may run all night | no (tool not granted) | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names |
+| skill | human | may `AskUserQuestion` | how it surfaces a question | writes |
+|---|---|---|---|---|
+| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, leaves it in Backlog, moves to the next package | epics, `parent` relations, `epic` label, clarification-needed comments, Backlog → Planned |
+| `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names |
 
-Order inside `gatekeeper` is mandatory: **bundle, then clarify** — answers are posted on the package ticket, and a ticket that becomes an epic child afterwards would carry answers the run never reads. `Planned → Todo` is human-only; `Question → anywhere` is human-only. No skill here ever moves a card into Todo.
+`AskUserQuestion` is not part of this plugin at all — the last remaining use (confirming the
+`bundler`'s package cut, and asking the `clarifier`'s open questions in chat) was removed: a
+bundling decision is applied and reported rather than confirmed, and a clarification question is
+posted on the ticket rather than asked live, so `gatekeeper` never blocks a run on somebody being
+present to answer (`skills/gatekeeper/SKILL.md`, "Nothing in this skill blocks on a chat answer").
+A human still has to start the `gatekeeper` session by hand — that has not changed, and there is
+no cron/headless trigger for it in this plugin yet — but once started it runs every candidate to
+completion in one pass instead of stalling on the first one that needs input.
+
+Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarification comments are posted on the package ticket, and a ticket that becomes an epic child afterwards would carry comments the run never reads. `Planned → Todo` is human-only; `Question → anywhere` is human-only. No skill here ever moves a card into Todo.
 
 ### Board model (shared GitHub Projects v2 board, logical names from `projects.yml`)
 
@@ -100,6 +132,8 @@ Escalate one level up until a level can answer; the human only when no level is 
 - **Release is orphan-branch + marketplace dispatch.** `release.yml` (manual: Actions → release → `version=X.Y.Z`) stamps the version into both manifests, force-pushes an orphan `release` branch holding only install-ready files and POSTs a dispatch (`category: skill`) to `Seretos/agent-marketplace`. `main` and `release` share no history. Clients install at the tag `agent-ticket-orchestrator--vX.Y.Z`.
 - **`agents/` is a release artifact.** The stage step copies `agents/` next to `skills/`; drop that line and the released skills dispatch undefined subagent types.
 - **Required secret:** `MARKETPLACE_DISPATCH_TOKEN` — fine-grained PAT, `Contents: RW` + `Pull requests: RW` on `Seretos/agent-marketplace` only.
+- **The dispatch payload carries a `changelog` field** — the same notes body `gh release create --generate-notes` already produced two steps earlier, read back via `gh release view <tag> --json body`, never recomputed a second time. `agent-marketplace#235` renders it into the opened PR under `## Changelog`; the field is optional on the consumer side and was silently ignored before this repo started sending it. Built with `jq -n`, not spliced into the `curl -d @- <<EOF` heredoc the rest of the payload used to use raw — a changelog is multi-line markdown that can contain backticks/quotes/newlines, any of which would break an unquoted heredoc and silently drop the whole dispatch (the same class of bug that already hit `agent-marketplace`'s `tags` field once, see `agent-marketplace@89aa850`). This repo has no `dispatch.yml` to mirror the change into — only `lint.yml` and `release.yml` exist here.
+- **A failed release never gets "fixed" in place.** There is no re-run, no re-dispatch, no editing an already-opened marketplace PR for a version that failed partway — "Fail if tag already exists" refuses to reuse a version number, so the only way forward after a failure is the next version number, same as any other release. Nothing in this workflow tries to detect or special-case a retry.
 - **`assets/icon.png` and `description.md` are release artifacts.** The dispatch payload points at `raw.githubusercontent.com/${repo}/${TAG}/assets/icon.png` and `…/description.md`, so both must live on the orphan `release` branch at the tagged commit — the stage step copies them for exactly that reason.
 - **Dependencies** are declared in `.claude-plugin/plugin.json` (`agent-autonomous-developer`, `agent-project-issues`, `agent-worktree`); Claude Code installs/loads them with this plugin. The Codex manifest (`.codex-plugin/plugin.json`) carries no dependency field — Codex hosts install the MCPs separately.
 - **LF only.** Claude Code silently ignores a `SKILL.md` or `agents/*.md` with CRLF line endings; `.gitattributes` forces LF and `lint.yml` fails on CRLF.

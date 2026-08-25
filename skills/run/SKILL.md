@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then takes every open package in the board's Todo column (verifying the previous package actually cleared first), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; branch protection, a missing permission, and an unresolved mergeability state still move the card to Done or escalate to Question as before. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
+description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then takes every open package in the board's Todo column (verifying the previous package actually cleared first), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state still move the card to Done or escalate to Question as before. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -188,8 +188,8 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 | latest event | you do |
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>)` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
-| `blocked` | Set aside: append to `blocked_list`, leave the card in **Doing**, `worktree_remove` (the branch is pushed if a PR exists; if not, the retry starts fresh anyway). Continue with the next package. |
-| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **One** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
+| `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
+| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
 A `pr-opened` or `ci-red` event seen *while the process is still alive* is
 not terminal — but you never see that state, because you only act after
@@ -197,6 +197,43 @@ the process has ended. CI waiting is the lower plugin's job,
 inside its own process. If the latest event after the process ended is
 `pr-opened` or `ci-red`, the process died mid-CI-loop: that is the "none"
 row above.
+
+**Blocked events are triaged before they cost a retry.** A `blocked` event means the lower plugin
+genuinely could not decide something — but "genuinely could not decide" and "a retry would change
+nothing" are not the same fact, and the old unconditional path (set aside, one full retry session
+at the end of the run, no matter what) spent a whole session on cases that told us in their own
+text that a retry was pointless. Incident, `agent-project-issues` package #265
+(`agent-ticket-orchestrator#7`): the `blocked` event's own text predicted a Codex re-review would
+"very likely just exhaust the cap without new information" — a human who happened to be watching
+answered it from the ticket comment alone, no retry session needed.
+
+So instead of setting the package aside:
+
+1. Dispatch the **triage** subagent (fresh, unnamed, synchronous) with the `blocked` event's
+   question, options, recommendation, and what was already checked, plus `project_id`, `package`,
+   `local_path`. It reads ticket, comments, siblings and code — the same test the `clarifier`
+   already applies to Backlog questions — and ends `STATUS: ANSWERED` (a chosen option plus
+   reasoning) or `STATUS: ESCALATE` (why it is not answerable from context).
+2. **`ANSWERED`** → `add_comment(project_id, ticket_id=<package>, body=…)` with heading
+   `## Blocked triage (run)`, the question, the chosen option, and the reasoning — then
+   immediately re-dispatch (step 2b, same script, `attempt+1`, same worktree). The lower plugin's
+   `context-extractor` re-reads the ticket transcript on the next attempt and picks the answer up;
+   no change to its contract. Do **not** wait for every other Todo package to have its turn first —
+   the whole point is that nothing about this answer changes by waiting.
+3. **`ESCALATE`** → `add_comment` with the original question plus one line — *"Escalated: not
+   answerable from ticket, comments or code — see the blocked event above."* — → **Question**,
+   `worktree_remove`. Do not spend a retry session on a question triage already told you a retry
+   cannot resolve.
+4. **Triage once per package per run.** Before dispatching triage, check whether this package's
+   ticket already carries a `## Blocked triage (run)` comment from earlier in this run
+   (`list_comments`, search for the heading). If it does, a second `blocked` event goes straight to
+   the `ESCALATE` reaction above — a triage-answered redispatch that blocks again means the answer
+   did not hold or a materially different question surfaced, and either way a second guess is not
+   this system's to make alone.
+
+This replaces the old two-stage design entirely: there is no more "second pass at the end of the
+run" for `blocked` packages, and `blocked_list` does not exist. A `blocked` event is triaged the
+moment it is read, in board order, exactly like every other reaction in this step.
 
 **When the merge fails — classify before reacting.**
 
@@ -220,10 +257,36 @@ A **conflict is mechanical** and belongs to this system. Everything else on
 this table is a decision or a configuration, and belongs to a human. See
 *Why "retry" is never a valid Question*.
 
+**The pre-retry CI check — waiting is not failing.** A process can end on `failed` or a
+non-terminal event for a reason that has nothing to do with the package: it can die while a gating
+CI run is still `in_progress`, or even after that run has already finished green, simply because
+the session ended before it read the result. Two independent incidents escalated to Question on
+exactly this (`agent-ticket-orchestrator#8`): `agent-worktree` package #165 (one CI run green,
+the other still running when the session exited) and `agent-project-issues` package #268 (**both**
+gating runs had already completed successfully before the session exited — there was nothing left
+to wait for, let alone decide). Before spending the `failed`/no-terminal-event retry:
+
+1. If the latest event carries a `pr:` value, or `list_prs(project_id, head="pkg/<id>-<slug>",
+   status="open", limit=5)` finds one, call `get_pr(project_id, pr_id=<pr>)` once and
+   `list_pipeline_runs(project_id, commit_sha=<pr.head.sha>, limit=20)`.
+2. **Every run `conclusion == "success"`**, and `mergeable_state` does not read as a conflict per
+   the table above → the package is finished in every way that matters even though the process
+   never said so. Go straight to the `ci-green` reaction (merge, verify `merged: true`, → Done)
+   **without spending the retry**.
+3. **At least one run is still `status != "completed"`** → the package is only waiting.
+   `Bash("sleep 60")` once and re-check — the same one-more-look pattern the merge classification
+   above already uses, never a third check here either. Still not finished → *now* the ordinary
+   retry applies (step b, `attempt+1`); this is one extra look, not an unbounded wait, and it does
+   not conflict with *Waiting rule* below (that rule is about never polling CI in place of the
+   lower plugin's own Phase 6 loop — this is a single, bounded recheck of a process that has
+   already ended, not a wait *inside* a running process).
+4. **Any run has failed** → this is a genuine `failed`; the ordinary retry applies unchanged.
+5. **No PR exists yet for this package** → nothing to check; the ordinary retry applies unchanged.
+
 **The rebase retry.** One attempt, once per package per run — a budget
-independent of the `failed`-retry budget above and the `blocked` re-dispatch
-in step 3 (see *Merge outcomes are classified, and a conflict is a retry*
-below for why they do not share a counter).
+independent of the `failed`-retry budget above and the triage-driven
+re-dispatch a `blocked` event can trigger (see *Merge outcomes are classified,
+and a conflict is a retry* below for why they do not share a counter).
 
 1. **Reuse the worktree.** You have not removed it yet at this point in 2c,
    and it is on `pkg/<id>-<slug>` with the package's commits. Do **not**
@@ -250,11 +313,13 @@ below for why they do not share a counter).
      both merge attempts, both `mergeable_state` values and both `RUNDIR`s →
      **Question**, `worktree_remove`, note `merge-conflict` in the report.
    - `blocked` → the resolution needs a product decision (two packages
-     implemented incompatible behaviour). `add_comment` with one line —
-     *"Escalated after a rebase attempt: the conflict resolution is a
-     decision — see the blocked event above."* → **Question**,
-     `worktree_remove`. **Do not** append to `blocked_list`: the second pass
-     (step 3 below) is for packages that never got a PR at all.
+     implemented incompatible behaviour) — the rebase retry's own single
+     attempt is already spent, so this does not also draw on the triage
+     mechanism below (that budget is for the *primary* `blocked` reaction,
+     not a second one inside an already-spent repair attempt). `add_comment`
+     with one line — *"Escalated after a rebase attempt: the conflict
+     resolution is a decision — see the blocked event above."* → **Question**,
+     `worktree_remove`.
    - `failed`, or no terminal event → `add_comment` with the failure summary
      and both `RUNDIR`s → **Question**, `worktree_remove`. **Do not** spend
      the `failed`-retry budget on a repair session — it already had its own
@@ -268,33 +333,15 @@ Never write Question for a reason unrelated to the merge, never leave a
 `ci-green` package in **Doing**, and never carry a stale escalation from an
 earlier attempt forward past a later `ci-green`. Only the **latest** event
 counts — that is why you always read `list_comments(order="desc")` and take
-the *first* `adev:event`, before every decision, including the second pass
-and every escalation.
+the *first* `adev:event`, before every decision, including a triage-driven
+re-dispatch and every escalation.
 
 **d. Worktree removal.** Always `worktree_remove(environment_id=…)`; on a
 Windows directory lock retry once with `kill_blocking_processes=true`; if it
 still fails, record the path under *manual cleanup* in the report and
 continue. A stuck worktree never blocks the next package.
 
-### 3. Second pass for set-aside packages
-
-Before re-dispatching an entry of `blocked_list`, re-read its latest event.
-If it is now `ci-green` (a later attempt superseded the `blocked` you set it
-aside for), do **not** re-dispatch — run the 2c `ci-green` reaction instead
-(*`ci-green` outranks everything*, above).
-
-Otherwise, after every Todo package has had its turn, re-dispatch each
-remaining entry of `blocked_list` **once** with `attempt+1` and a **fresh**
-worktree (same branch name; `worktree_create` again — the branch still exists
-remotely if a PR was pushed, so omit `base`). React as in 2c. If the result is
-`blocked` again: the question is already on the ticket as the lower plugin's
-`blocked` comment; add exactly one line —
-
-> Escalated: needs a human decision — see the blocked event above.
-
-— then → **Question**, `worktree_remove`.
-
-### 4. Final report
+### 3. Final report
 
 One table: `package · result (Done / Question / Review) · note · PR · rounds
 (from the last event's `rounds`) · attempts`. `note` is empty for a clean
@@ -402,16 +449,20 @@ Three changes close that hole, all documented at their point of use above:
   an unresolved state (all still a human's job), and gives the conflict case
   exactly one rebase retry before it, too, becomes a Question.
 
-**Three independent retry budgets, not a shared counter:** one `failed`/
-no-terminal-event retry (2c), one rebase retry (the conflict path), one
-`blocked` re-dispatch (step 3). A package can legitimately reach `attempt=3`
-— failed once, `ci-green` on the second try, conflicted and rebased on the
-third — and `attempt` stays a monotonically increasing session counter across
-all of it, exactly as it already was. **Hard ceiling: at most three sessions
-per package per run, at most one of which is a rebase session.** A shared
-counter would reproduce the exact dead end this incident describes: a package
-that spent its one retry on an earlier crash, then reached `ci-green`, then
-had nothing left for a purely mechanical conflict.
+**Independent retry budgets, not a shared counter:** one `failed`/
+no-terminal-event retry (2c, now preceded by the pre-retry CI check, which
+does not itself spend the budget), one rebase retry (the conflict path), and
+one triage-driven re-dispatch when a `blocked` event turns out to be
+`ANSWERED` (also 2c — see *Blocked events are triaged before they cost a
+retry*, above). A package can legitimately reach `attempt=3` — failed once,
+`ci-green` on the second try, conflicted and rebased on the third — and
+`attempt` stays a monotonically increasing session counter across all of it,
+exactly as it already was. **Hard ceiling: at most three sessions per package
+per run, at most one of which is a rebase session, at most one of which is a
+triage-driven re-dispatch.** A shared counter would reproduce the exact dead
+end this incident describes: a package that spent its one retry on an earlier
+crash, then reached `ci-green`, then had nothing left for a purely mechanical
+conflict.
 
 The lower plugin (`agent-autonomous-developer`) makes the rebase retry
 possible: its `process-ticket` skill orients on the branch itself (an open
