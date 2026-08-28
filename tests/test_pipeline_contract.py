@@ -1,5 +1,7 @@
 """
-Structural invariants of the differentiated-escalation rebuild (2026-08-25).
+Structural invariants of the differentiated-escalation rebuild (2026-08-25),
+and of the dependency-ordering + problem-frame change that followed it
+(agent-ticket-orchestrator#10, #11).
 
 This plugin had no tests at all before this file (agent-plugin-dev#27). These
 pin the specific invariants this change introduced — a package that only died
@@ -8,6 +10,21 @@ before it costs a retry, and neither `gatekeeper` step blocks on a live chat
 answer — without asserting on exact prose wording. Full contract coverage
 (mirroring agent-autonomous-developer's test_pipeline_contract.py) remains
 agent-plugin-dev#27's scope, not this file's.
+
+#10/#11 add: `run` orders Todo by `blocked_by` relations and skips a package
+whose blocker has not landed rather than escalating or reordering past it;
+the `clarifier` interrogates a ticket's problem frame (symptom, measurement,
+prior attempts) before any detail question and detects regression chains.
+Both issues are prose/behaviour changes to an LLM-judged pipeline — the
+groups below assert structure (headings, load-bearing substrings, ordering of
+sections), never simulate the clarifier's or run's actual judgement. Ticket
+#11's acceptance criteria 3 and 4 ask for fixture-ticket behaviour that only a
+live `clarifier` dispatch could produce; this repo has no harness for that
+(no live `claude -p`, no API key, no tracker in CI), so the only executable
+form is the "Two worked frames" section in `agents/clarifier.md`, and
+`test_clarifier_ships_the_two_worked_frames` below is the one test that
+checks it — it is not a substitute for actually running the clarifier against
+a real ticket.
 """
 
 import pathlib
@@ -18,8 +35,22 @@ RUN = REPO_ROOT / "skills" / "run" / "SKILL.md"
 GATEKEEPER = REPO_ROOT / "skills" / "gatekeeper" / "SKILL.md"
 AGENTS_DIR = REPO_ROOT / "agents"
 TRIAGE = AGENTS_DIR / "triage.md"
+BUNDLER = AGENTS_DIR / "bundler.md"
+CLARIFIER = AGENTS_DIR / "clarifier.md"
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
+README = REPO_ROOT / "README.md"
+CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+
+
+def _slice(text: str, start: str, end: str) -> str:
+    """The text between the first occurrence of `start` and the first
+    occurrence of `end` after it — used to scope an assertion to one
+    section instead of the whole file."""
+    i = text.index(start)
+    j = text.index(end, i)
+    return text[i:j]
 
 
 def _read(p: pathlib.Path) -> str:
@@ -172,3 +203,239 @@ def test_release_workflow_builds_the_dispatch_payload_with_jq_not_a_bare_heredoc
     dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
     assert not re.search(r"^\s*[^#\n]*<<EOF", dispatch_step, re.MULTILINE)
     assert '-d "$PAYLOAD"' in dispatch_step
+
+
+# --- B1: inter-ticket dependencies (agent-ticket-orchestrator#10) ----------
+
+def test_bundler_schema_carries_depends_on():
+    text = _read(BUNDLER)
+    assert '"depends_on"' in text
+    assert '"evidence"' in text
+
+
+def test_bundler_distinguishes_collision_from_dependency():
+    text = _read(BUNDLER)
+    assert "collision" in text.lower()
+    assert "dependency" in text.lower()
+    assert "disjoint" in text.lower()
+
+
+def test_bundler_never_emits_a_dependency_without_evidence():
+    text = _read(BUNDLER)
+    assert "without `evidence`" in text or "without evidence" in text.lower()
+
+
+def test_clarifier_frame_block_carries_depends_on():
+    text = _read(CLARIFIER)
+    assert "clarifier:frame" in text
+    assert "depends_on:" in text
+
+
+def test_gatekeeper_writes_blocked_by_from_the_dependent_side():
+    text = _read(GATEKEEPER)
+    assert "add_relation" in text
+    assert "blocked_by" in text
+    assert "list_relation_kinds" in text
+
+
+def test_gatekeeper_documents_the_gitlab_fallback():
+    text = _read(GATEKEEPER)
+    assert "relates_to" in text
+    assert "gitlab" in text.lower()
+    assert "gatekeeper:deps" in text
+
+
+def test_gatekeeper_lifts_dependencies_to_the_package_ticket():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.5", "## Step 3.6")
+    assert "list_hierarchy" in section
+    assert "package map" in section
+
+
+def test_blocked_package_still_reaches_planned():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.5", "## Step 3.6")
+    assert "withholds a package from Planned" in section
+    assert "Planned" in section
+
+
+def test_gatekeeper_never_writes_a_relation_from_the_child_side():
+    text = _read(GATEKEEPER)
+    assert "child side" in text.lower()
+
+
+def test_run_reads_relations_before_dispatch():
+    text = _read(RUN)
+    section = _slice(text, "### 1a. Order Todo by dependency", "### 2. Per package, sequentially")
+    assert "include_relations=True" in section
+    assert "blocked_by" in section
+
+
+def test_run_defines_resolved_as_done_column_or_closed_off_board():
+    text = _read(RUN)
+    assert "### When is a blocker resolved" in text
+    section = _slice(text, "### When is a blocker resolved", "### 2. Per package, sequentially")
+    assert "custom_fields" in section
+    assert "Done" in section
+    assert "closed" in section
+    assert "Closes #<n>" in section
+
+
+def test_run_orders_topologically_with_board_order_tiebreak():
+    text = _read(RUN)
+    section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
+    assert "topolog" in section.lower()
+    assert "board order" in section.lower()
+
+
+def test_run_never_aborts_on_a_dependency_cycle():
+    text = _read(RUN)
+    section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
+    assert "cycle" in section.lower()
+    assert "abort" in section.lower()
+    assert "STOP" not in section
+
+
+def test_run_skips_rather_than_escalating_a_blocked_package():
+    text = _read(RUN)
+    section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
+    assert "skipped:" in section
+    assert "leave its card in **Todo**" in section or "do not move its card" in section
+
+
+def test_run_rechecks_blockers_at_dispatch_time():
+    text = _read(RUN)
+    section = _slice(text, "**Re-check blockers at dispatch time.**", "**Gate on the previous package")
+    assert "blocker" in section.lower()
+    assert "ended in" in section
+
+
+def test_run_reports_a_skipped_package_as_benign_partial():
+    text = _read(RUN)
+    section = _slice(text, "### 3. Final report", "## Waiting rule")
+    assert "Skipped" in section
+    assert "benign" in section.lower()
+
+
+# --- B2: the problem frame (agent-ticket-orchestrator#11) ------------------
+
+def test_clarifier_frame_section_precedes_everything_else():
+    text = _read(CLARIFIER)
+    assert text.index("### Frame") < text.index("### Resolved by reading") < text.index("### Open Questions")
+
+
+def test_clarifier_frame_names_all_three_questions():
+    text = _read(CLARIFIER)
+    lowered = text.lower()
+    assert "symptom" in lowered
+    assert "measurement" in lowered
+    assert "prior attempt" in lowered
+
+
+def test_clarifier_status_line_contract_is_intact():
+    text = _read(CLARIFIER)
+    assert "STATUS: CLEAR" in text
+    assert "STATUS: NEEDS_INPUT" in text
+    assert "last line" in text.lower()
+    assert "prefix" in text.lower()
+
+
+def test_clarifier_forbids_clear_on_an_internal_only_ac():
+    text = _read(CLARIFIER)
+    assert "internal:" in text
+    assert "not CLEAR" in text
+
+
+def test_clarifier_escape_hatch_exists_and_is_named():
+    text = _read(CLARIFIER)
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    for category in ("refactor", "docs", "ci"):
+        assert category in section.lower()
+
+
+def test_clarifier_escape_hatch_is_closed_for_bug_tickets():
+    text = _read(CLARIFIER)
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    assert "bug" in section.lower()
+    assert "closed" in section.lower()
+
+
+def test_clarifier_chain_detection_is_capped():
+    text = _read(CLARIFIER)
+    assert "updated_after" in text
+    assert 'status="closed"' in text
+    assert "at most two" in text.lower() or "at most TWO" in text
+
+
+def test_clarifier_chain_rule_requires_two_of_three_signals():
+    text = _read(CLARIFIER)
+    assert "two of these three" in text.lower() or "two of" in text.lower()
+    assert "same file" in text.lower()
+
+
+def test_clarifier_keeps_list_tickets_in_its_tools():
+    fm = _frontmatter(_read(CLARIFIER))
+    tools = [t.strip() for t in fm.get("tools", "").split(",")]
+    assert any("list_tickets" in t for t in tools)
+
+
+def test_clarifier_ships_the_two_worked_frames():
+    """The only executable form of ticket #11's acceptance criteria 3 and 4
+    in this repo: there is no harness to drive a live clarifier against a
+    fixture ticket in CI, so the worked examples live here as prompt content
+    instead of under tests/, and this test only checks that they exist and
+    state the outcome they claim to."""
+    text = _read(CLARIFIER)
+    section = _slice(text, "## Two worked frames", "## Hard rules")
+    assert "#148" in section
+    assert "#90" in section
+    assert "NEEDS_INPUT" in section
+    assert "CLEAR" in section
+
+
+def test_clarifier_never_rewrites_the_ticket():
+    text = _read(CLARIFIER)
+    assert "Read-only" in text
+
+
+def test_gatekeeper_applies_the_regression_chain_label_and_comment():
+    text = _read(GATEKEEPER)
+    assert "regression-chain" in text
+    assert "create_label" in text
+    assert "Regression chain (gatekeeper)" in text
+
+
+def test_gatekeeper_chain_comment_is_written_once():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.6", "## Step 4")
+    assert "already exists" in section
+
+
+def test_gatekeeper_report_names_symptom_and_measurement_per_package():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 5", "## Hard rules")
+    assert "symptom" in section
+    assert "measurement" in section
+
+
+def test_gatekeeper_parses_the_frame_block_but_never_aborts_on_it():
+    text = _read(GATEKEEPER)
+    assert "clarifier:frame" in text
+    assert "frame block missing" in text
+
+
+def test_agents_md_documents_both_new_mechanisms():
+    text = _read(AGENTS_MD)
+    assert "### Dependencies are relations" in text
+    assert "### The frame comes before the questions" in text
+
+
+# --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------
+
+def test_every_parsed_markdown_file_is_lf_only():
+    """lint.yml only checks skills/*/SKILL.md and agents/*.md for CRLF; this
+    closes the gap for AGENTS.md, CLAUDE.md and README.md too, and matters
+    concretely here because these edits were made on Windows."""
+    paths = [AGENTS_MD, CLAUDE_MD, README, RUN, GATEKEEPER, BUNDLER, CLARIFIER, TRIAGE]
+    offenders = [str(p) for p in paths if b"\r\n" in p.read_bytes()]
+    assert offenders == []
