@@ -63,6 +63,36 @@ point of use (`agent-ticket-orchestrator#7`, `#8`):
   and the package is re-dispatched immediately (no waiting for other packages first); `ESCALATE` →
   straight to Question, no retry spent. At most one triage attempt per package per run.
 
+### Dependencies are relations, and "done" is a column, not a closed flag
+
+A "wait for #X" comment is invisible to a human moving Planned → Todo and completely invisible to `run`. Incident: `agent-project-issues` epic #291 compiles only against `lib-python-projects` v0.3.14, which open ticket #289 was to introduce; the `clarifier` found it, the `gatekeeper` had nowhere to put it, and the only fix was a hand-written `blocked_by` relation applied after the fact (`agent-ticket-orchestrator#10`).
+
+The fix is a three-level split: `bundler`/`clarifier` **report** raw ids (`depends_on` in the bundler's JSON, `depends_on:` in the clarifier's `clarifier:frame` block — see below), `gatekeeper` **lifts and writes** (`blocked_by` on the package ticket, both ends lifted via the Step 2 package map and `list_hierarchy`), `run` **obeys** (`skills/run/SKILL.md` § 1a's topological order, plus a dispatch-time re-check). Neither `bundler` nor `clarifier` ever writes a relation, checks a column, or resolves an id to an epic — they have no write tools and no reason to guess at board state that changes between their pass and the gatekeeper's write.
+
+**Epic lifting exists because only the package ticket travels the board.** A relation pointing at an epic child can never be observed satisfied: the child closes as a side effect of the epic's PR (`Closes #<n>`) and never has a column of its own. Lifting is the gatekeeper's job, not the clarifier's or `run`'s, because it is the only level that knows the epic↔child map at the moment the dependency is found — `run` only ever reads package tickets, and pushing lifting into it would break that invariant.
+
+**Why "closed" alone is the wrong resolved-test, and why "column alone" is also wrong.** `run` treats a blocker as resolved when it is either in the **Done column** or **closed while never having queued through the board** (`skills/run/SKILL.md`, "When is a blocker resolved"). Both halves are load-bearing: an epic package ticket reaches **Done** by column but is *not* closed — only its children close, through `Closes #<n>` in the lower plugin's PR — so a status-only test would report every finished epic as still blocking and skip its dependents forever. Symmetrically, an epic *child* is closed but never enters a column, so a column-only test would report finished work as still blocking. This is unreconstructable from any one file, because it combines the lower plugin's `Closes #<n>` behaviour with this plugin's column semantics — that combination is exactly what the fact records.
+
+**Blocked ≠ unplanned.** A `blocked_by` relation withholds a package from *execution*, never from Planned — the enforcement point is `run` alone (its dependency order and dispatch-time re-check), so that a human can still see and release a blocked card, and a package whose blocker is itself only a Backlog candidate of the same gatekeeper pass still reaches Planned rather than waiting on a human to notice and re-run.
+
+**The provider branch is permanent.** GitLab supports neither `blocked_by` nor `blocks` (`list_relation_kinds`'s `provider_support`); GitHub in turn has no `relates_to`. There is no kind portable across all three. GitLab's record is `relates_to` plus a `<!-- gatekeeper:deps v1 -->` comment block, read by the same dumb `key: value` reader as `adev:event` — one parsing convention in this repo, not two.
+
+A dependency cycle, or a package whose blocker never resolves, never aborts a `run` — Step 1a reports it (`dependency cycle: …`, `skipped: …`) and processes the cycle's members in board order at the end, the same "record it and continue" discipline as every other `run` failure mode.
+
+### The frame comes before the questions — a precise answer inside a wrong frame is still wrong
+
+Incident, compressed: `lib-python-worktree` #90 → #121 → #148 → #154. Four tickets, three weeks, one unchanged user symptom (`worktree_remove` hangs, the MCP server dies on Windows). Every one was framed as "thread leak", AC "thread count bounded". v0.3.12 bounded it: **AC met, symptom unchanged.** At #148 the `clarifier` asked four rounds of precise questions inside that frame and never questioned the frame itself. Root-cause account in `Seretos/lib-python-worktree#154` (`agent-ticket-orchestrator#11`).
+
+Hence three mandatory frame questions — symptom, measurement, prior attempts — before any detail question, carried in the same `<!-- clarifier:frame v1 -->` machine block that also carries `depends_on` (one new parsing surface, not two — see above). `STATUS: CLEAR` is gated on the acceptance criterion measuring the symptom rather than an internal proxy, for a **defect** ticket. Note that on GitHub/GitLab `ticket.acceptance_criteria` is always empty and the AC is body prose under a heading like `## Acceptance` — a clarifier that reads only the field never sees the AC at all.
+
+**The escape hatch is narrow on purpose.** Most tickets in a prose/plugin repository like this one have no user-visible behaviour; a rule that turned them all into `NEEDS_INPUT` would be switched off within a week. `symptom: none:<category>` (`refactor, docs, ci, infra, test, chore, prose`) is the hatch; it is closed for anything labelled `bug`/`regression`/`defect` or describing a hang, crash, wrong result, slowness or leak.
+
+**Chain detection lives in the `clarifier`, one dispatch.** It already has `list_tickets`, and "prior attempts" is one of its own three frame questions; the `gatekeeper` only *applies* the finding (`regression-chain` label + chain comment, Step 3.6), the same shape it already uses for `## Open Questions`. A two-phase design (gatekeeper searches, then dispatches the clarifier with a mandate) would ask the weaker level first and pay a second Opus dispatch to re-tell the clarifier what it had already found.
+
+**The false-positive rule, and why cheap is correct.** A closed ticket only joins a chain when two of three signals hold (link/mention, same symptom verb, same module+symbol) — same-file-alone is never a chain. A wrong flag costs one label, one comment and one `NEEDS_INPUT` round a human clears in seconds; a missed chain costs three weeks and four tickets. Do not build a better detector.
+
+**Why there is no CI fixture for any of this.** The `clarifier` is an LLM judgement dispatched inside a session, not a function: a fixture harness would need a live `claude -p`, an API key in CI and a live tracker, and would still be non-deterministic. The worked examples therefore live in `agents/clarifier.md` ("Two worked frames") as prompt content — which changes behaviour — and `tests/test_pipeline_contract.py` asserts only that they are present and what outcome each states. **Do not "fix" this with a mock clarifier;** a test that asserts one hand-written string equals another tests nothing.
+
 ### Why state lives in the ticket, not in the return value
 
 A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: the process exit code is a courtesy, and `run` re-reads `list_comments(order="desc")` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
@@ -87,8 +117,8 @@ Two `claude` processes starting at the same moment race on `~/.claude.json` and 
 
 | skill | human | may `AskUserQuestion` | how it surfaces a question | writes |
 |---|---|---|---|---|
-| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, leaves it in Backlog, moves to the next package | epics, `parent` relations, `epic` label, clarification-needed comments, Backlog → Planned |
-| `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names |
+| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, leaves it in Backlog, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/dependency/regression-chain comments, Backlog → Planned |
+| `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names; leaves a blocked package untouched in Todo |
 
 `AskUserQuestion` is not part of this plugin at all — the last remaining use (confirming the
 `bundler`'s package cut, and asking the `clarifier`'s open questions in chat) was removed: a
@@ -107,17 +137,17 @@ Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarificati
 |---|---|---|
 | Backlog | everything new | anyone |
 | Planned | bundled + clarified, no open questions | gatekeeper |
-| Todo | released for the run — the only column `run` reads | **human only** |
+| Todo | released for the run — the only column `run` reads | **human only** — `run` may leave a card here untouched when its `blocked_by` blocker has not reached Done |
 | Doing | package dispatched | run |
 | Review | PR open, CI running / red / awaiting merge | lower plugin |
-| Done | merged, CI green | run |
+| Done | merged, CI green — an epic reaches Done as a **column**; it is not closed, only its children close, via `Closes #<n>` | run |
 | Question | escalated; the question is a ticket comment | run in; **human only** out |
 
 Logical names are the contract; native names (`"Frage offen"` vs `"Question"`) are resolved per call via `list_board_columns` and never hardcoded. Writes: `update_ticket(custom_fields={"Status": <native>})`. Reads: `list_tickets(column=<logical>)`. Comments are the log, columns are the signal; an empty Question column means no open questions.
 
 ### Escalation rule (ecosystem-wide, root `AGENTS.md`)
 
-Escalate one level up until a level can answer; the human only when no level is left, and only for a **decision**, never a **retry**. Each level states what it checked and why that was not enough. A Question card whose only sensible reaction is "kick it again" is a bug in whichever level forwarded instead of trying — `clarifier` applies this before the run, the lower plugin's three-round caps during it, `run`'s second attempt after it.
+Escalate one level up until a level can answer; the human only when no level is left, and only for a **decision**, never a **retry**. Each level states what it checked and why that was not enough. A Question card whose only sensible reaction is "kick it again" is a bug in whichever level forwarded instead of trying — `clarifier` applies this before the run, the lower plugin's three-round caps during it, `run`'s second attempt after it. The `clarifier` now applies the same rule to a ticket's **frame** — its symptom, its measurement, whether it is the latest in a regression chain — not only to its open decisions (see "The frame comes before the questions", above).
 
 ### What a project needs in `~/.seretos/projects.yml`
 

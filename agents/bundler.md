@@ -47,10 +47,21 @@ and in the ticket tracker.
      medium ticket in an effort batch.
    Everything else is **single**. When in doubt, single: an unnecessary epic
    costs a human a decision; an unnecessary single costs only CI minutes.
-4. **Respect explicit structure.** A `blocked_by` on a ticket *outside* the
-   candidate list means the ticket is not ready — leave it single and say so
-   in the rationale so the gatekeeper can skip it. Never split an existing
-   epic.
+
+   **Collision and dependency are different findings.** Two tickets whose
+   diffs would fight over the same lines are a **collision** — bundle them,
+   and the dependency dissolves inside one branch. Two tickets where one
+   introduces a capability, version pin, schema or file the other needs, but
+   whose diffs are disjoint, are a **dependency** — leave them as separate
+   packages and record it in `depends_on` (below). Bundling a dependency pair
+   into an epic to "solve" the ordering makes one PR out of two unrelated
+   diffs; recording it lets `run` order them instead.
+4. **Respect explicit structure.** An explicit `blocked_by` on a ticket
+   *outside* the candidate list is a **dependency**: record it in
+   `depends_on`, same as any other dependency found in step 3 — do not leave
+   the ticket single "to skip it". The gatekeeper links it and still releases
+   the package to Planned once otherwise clear; only `run` withholds
+   execution on it. Never split an existing epic.
 5. **Title each multi-ticket package** like a ticket title: imperative, under
    ~70 characters, describing the combined outcome (not "Bundle of #3, #7").
 
@@ -64,15 +75,25 @@ First a fenced JSON block, exactly this shape:
     { "title": "<epic title or the single ticket's title>",
       "reason": "collision" | "effort" | "single",
       "tickets": [<id>, ...],
-      "rationale": "<one or two sentences; for collision name the shared files/symbols>" }
+      "rationale": "<one or two sentences; for collision name the shared files/symbols>",
+      "depends_on": [
+        { "ticket": <id>,
+          "why": "<one line: which capability/version/schema this package needs that #<id> introduces>",
+          "evidence": "<file:symbol, or the ticket line that shows it>" }
+      ] }
   ]
 }
 ```
 
 Every candidate id appears in exactly one package. Ids are the tracker's
-numeric ids without `#`. Then, below the block, a short human rationale
-(≤ 10 lines): what you looked at, which collisions you found, which tickets
-are not ready and why.
+numeric ids without `#`. `depends_on` is **always present** — `[]` when there
+is none; a key that appears only sometimes is a key the gatekeeper will get
+wrong. Each entry's `ticket` is a raw numeric id and may name a ticket
+**outside the candidate list** (Planned, Todo, or one seen only through a
+relation) — the gatekeeper resolves and validates it, you only report what you
+saw. A target *inside the same package* is not a dependency; drop it. Then,
+below the block, a short human rationale (≤ 10 lines): what you looked at,
+which collisions you found, which dependencies you found and why.
 
 ## Hard rules
 
@@ -85,3 +106,5 @@ are not ready and why.
   the error in the rationale.
 - **No plans, no designs.** Footprints are for detecting overlap, not for
   telling the developer what to do.
+- **Never emit a `depends_on` entry without `evidence`.** A footprint guess is
+  not a dependency.

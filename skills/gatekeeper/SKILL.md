@@ -53,6 +53,12 @@ next gatekeeper run picks the answer up.
 3. **Write permission.** `list_projects` → `permissions.issues.create` and
    `issues.modify` must be `true` (you create epics, add relations, post
    comments, move cards). Otherwise STOP and say which flag is missing.
+4. **Relation vocabulary.** `list_relation_kinds()` is called once, at the
+   start of Step 2, and its result is kept for the rest of the pass:
+   `provider_support` for this project's `provider` (from `list_projects`)
+   decides the dependency-writing path in Step 3.5. A provider without
+   `blocked_by` (GitLab) is **not** a stop condition — see Step 3.5's
+   fallback.
 
 ## Step 1 — enumerate the Backlog
 
@@ -87,7 +93,8 @@ It returns a JSON block:
 ```json
 { "packages": [
   { "title": "...", "reason": "collision" | "effort" | "single",
-    "tickets": [<ids>], "rationale": "..." }
+    "tickets": [<ids>], "rationale": "...",
+    "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ] }
 ] }
 ```
 
@@ -130,6 +137,14 @@ For each accepted package with **two or more** tickets:
 A **single-ticket** package is the ticket itself — no epic, nothing created.
 
 From here on, *package ticket* means the epic, or the single ticket.
+
+**Build the package map while materialising.** Keep, for the rest of this
+pass, every candidate ticket id → the id of the package ticket it now belongs
+to (its epic, or itself). Every dependency written in Step 3.5 is resolved
+through this map first, so a dependency naming a ticket that became an epic
+child in this same pass lands on the epic, not on the child. Also fold the
+bundler's own `depends_on` entries into a per-package `deps` list here, to be
+written in Step 3.5 together with the clarifier's.
 
 ## Step 3 — clarify each package
 
@@ -187,6 +202,132 @@ bug, not something to post — if you notice it asking such things, note it in
 the report, but still post the question rather than answering it yourself:
 you are not allowed to decide on the project's behalf either.
 
+**Parse the frame block.** The clarifier's report begins with a
+`<!-- clarifier:frame v1 … -->` block on **both** statuses. Parse it as dumb
+`key: value` lines — the same reader `run` applies to `adev:event`: empty
+value = unknown, unknown keys ignored. You need `symptom`, `measurement` and
+`depends_on` for every package, and `chain` for Step 3.6. If the block is
+missing or unparseable, record `frame block missing` in Step 5's report and
+continue on the `STATUS:` line alone — never abort a pass for a malformed
+block.
+
+## Step 3.5 — link dependencies
+
+Runs per package, immediately after its clarifier call returns, **on both
+statuses** (CLEAR and NEEDS_INPUT) — a dependency is a fact, not a decision,
+and a package that stays in Backlog does not make it false.
+
+```
+deps = bundler's depends_on for this package  ∪  clarifier frame's depends_on
+for each raw target #t:
+  1. Lift. #t in the Step 2 package map -> target = map[#t]
+     else list_hierarchy(project_id, #t); parent non-null -> walk up
+       (at most 3 hops, take the topmost)
+     else target = #t
+     Why: only the package ticket travels the board and reaches Done. A
+     child closes as a side effect of its epic's PR and never has a column,
+     so a relation pointing at a child is a relation `run` can never see
+     satisfied.
+  2. Drop a self-edge. target == this package -> record "dependency absorbed
+     into the package", write nothing. Normal outcome when the bundler
+     bundled the pair.
+  3. Validate. get_ticket(project_id, target):
+     - not found     -> record "dependency #t not found", write nothing
+     - status closed -> record "dependency #t already closed", write nothing
+  4. Write, from the DEPENDENT side (ticket_id is always the "from" end):
+     - "blocked_by" in provider_support[<this project's provider>]
+       (github, azuredevops):
+         add_relation(project_id, ticket_id=<this package>,
+                       kind="blocked_by", target="#<target>")
+     - otherwise (GitLab supports neither blocked_by nor blocks; GitHub in
+       turn has no relates_to, so there is no portable kind and this branch
+       is permanent):
+         add_relation(project_id, ticket_id=<this package>,
+                       kind="relates_to", target="#<target>")
+       plus one comment on this package:
+
+         ## Dependency (gatekeeper)
+
+         Blocked by: #<target> — <why, from the clarifier/bundler>
+
+         <!-- gatekeeper:deps v1
+         blocked_by: #<target>
+         -->
+
+       `run` reads this block on providers without `blocked_by`. Do **not**
+       post this comment on github/azuredevops — there the relation is the
+       record and a duplicate comment is noise.
+  5. Idempotency. Skip a relation the package already carries (from this
+     step's own get_ticket, or an earlier pass's). A second identical
+     relation is harmless; a second identical comment is not.
+```
+
+**Being blocked never withholds a package from Planned.** A package whose
+questions are settled moves to Planned in Step 4 exactly as it would without
+the relation. Blocking is a reason to withhold from **execution**, and the
+only place that is enforced is `run`'s dependency ordering — the human still
+hand-picks Planned → Todo, and `run` still refuses to dispatch out of order.
+Withholding it from Planned instead would put the whole point of the relation
+back in a human's head.
+
+A blocker that is itself only a **Backlog candidate of this same pass**, and
+whose own clarifier came back `NEEDS_INPUT`, needs no special case: the
+relation is written, this package still reaches Planned, and a human who
+moves it to Todo will see `run` skip it until the blocker has been clarified,
+released and processed. That is a Planned package that is temporarily
+un-runnable — say so in Step 5's report, because it is the surprising outcome
+and the report is the only place it is visible.
+
+## Step 3.6 — regression chains
+
+Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
+
+1. **Idempotency first.** `list_comments` — if a
+   `## Regression chain (gatekeeper)` comment already exists **and** the
+   package already carries the `regression-chain` label, do nothing here; the
+   chain was recorded on an earlier pass and re-posting it is noise on
+   exactly the ticket that already has too much history.
+2. **Label.** `list_labels(project_id)` — `create_label(project_id,
+   "regression-chain")` if absent (GitHub 404s on an unknown label at write
+   time) — then `update_ticket(project_id, ticket_id=<package>,
+   labels_add=["regression-chain"])`.
+3. **Comment.** `add_comment(project_id, ticket_id=<package>, body=…)`:
+
+   ```
+   ## Regression chain (gatekeeper)
+
+   | ticket | acceptance criterion | outcome |
+   |---|---|---|
+   | #<a> | <its AC> | closed <date> — symptom persisted |
+   | #<b> | <its AC> | closed <date> — symptom persisted |
+
+   Symptom: <frame symptom>
+   Measurement of this ticket's AC: <frame measurement>
+   ```
+
+   Content comes from the clarifier's `### Frame` → *Prior attempts* lines,
+   verbatim — you have no code access and must not re-derive it. The MCP
+   prepends `#ai-generated`; do not add it yourself.
+4. The clarifier's root-cause mandate is already discharged: it detected the
+   chain and its own protocol obliged it either to reframe (staying CLEAR
+   only if the ticket already carries a symptom AC and a non-goal) or to
+   return `NEEDS_INPUT` with exactly the reframe question. **There is no
+   second dispatch.** Step 3's normal status handling then acts on that
+   status unchanged — two separate comments with intent: only the
+   `## Clarification needed (gatekeeper)` comment counts toward the existing
+   "4+ rounds" heuristic.
+
+Chain detection lives in the `clarifier`, not in a gatekeeper pre-pass: it
+already has `list_tickets`, "prior attempts" is one of its own three frame
+questions, and it is the only level in this flow with the code and the ticket
+history in context — you have neither, deliberately. A two-phase design would
+ask the same question twice, in the weaker place first, and pay for a second
+Opus dispatch per chained package to tell the clarifier something it had
+already found. What you do here is only what the clarifier cannot: apply a
+label and post a comment — exactly the same shape as
+`## Clarification needed (gatekeeper)`, which is already how this skill turns
+the clarifier's read-only output into board state.
+
 ## Step 4 — release to Planned
 
 On CLEAR:
@@ -199,11 +340,23 @@ Only the **package ticket** moves. Children of an epic stay exactly where they
 are (Backlog) — the board shows one card per unit of work, and the `run`
 enumerates Todo only, so a child never gets dispatched on its own.
 
+A package carrying a `blocked_by` (or its GitLab `relates_to` fallback)
+relation moves to Planned like any other CLEAR package — see Step 3.5.
+
 ## Step 5 — report
 
-A short table: `package · kind (epic/single) · tickets · reason (bundler) ·
-result (Planned / needs answer — see ticket #<id>)`. Flag
-any package at 4+ `## Clarification needed (gatekeeper)` comments as
+A table: `package · kind (epic/single) · tickets · reason (bundler) ·
+depends on (#ids, or —) · result (Planned / needs answer — see ticket #<id>)`.
+Under each row, two indented lines from the frame block: `symptom: <…>` and
+`measurement: <…>`.
+
+Also report, each named where it is produced: `regression-chain: #a → #b →
+this` for every chained package; `Planned but blocked: #<pkg> waits on #<b>,
+which is still in Backlog` for a blocker that has not itself reached Planned
+(Step 3.5); `dependency absorbed into the package`, `dependency #t already
+closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3).
+
+Flag any package at 4+ `## Clarification needed (gatekeeper)` comments as
 unusually hard to clarify (see Step 3). Then one line: "Move the packages you
 want processed tonight from Planned to Todo by hand, then start
 `/agent-ticket-orchestrator:run project_id=<id>`." — plus, if any package
@@ -222,9 +375,19 @@ then run `/agent-ticket-orchestrator:gatekeeper` again to pick them up."
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  relations, labels, clarification comments, and the Backlog → Planned move.
-- **Never close or re-title original tickets.**
+  `blocked_by`/`relates_to` relations, labels (including `regression-chain`),
+  clarification comments, dependency comments, regression-chain comments, and
+  the Backlog → Planned move.
+- **Never close or re-title original tickets.** A reframe is a proposal in a
+  comment; the human edits the ticket body.
 - **Bundle before clarify**, always.
+- **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
+  package out of Planned (Step 3.5).
+- **Never write a dependency relation from the child side.** It is written on
+  the package ticket, on both ends, lifted through the Step 2 package map and
+  `list_hierarchy` (Step 3.5).
+- **The `regression-chain` label and its comment are written once.** Check
+  for the existing comment and label before posting (Step 3.6).
 - **Subagents are unnamed and synchronous.** No `name`, no `SendMessage`, no
   `run_in_background`. Re-dispatch fresh instead of resuming; the `clarifier`
   reads its own answers back from the ticket, so nothing needs to be inlined

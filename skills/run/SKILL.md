@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then takes every open package in the board's Todo column (verifying the previous package actually cleared first), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state still move the card to Done or escalate to Question as before. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
+description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then orders every open package in the board's Todo column by its blocked_by relations (a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is skipped, left untouched in Todo, and reported), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state still move the card to Done or escalate to Question as before. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -100,7 +100,83 @@ packages = list_tickets(project_id, column="Todo", status="open", limit=100)
 
 **Only Todo.** Never read Backlog or Planned as candidates — those columns are
 the human's staging area and the gatekeeper's output; what is in Todo is what
-the human released. Process in board order (oldest first).
+the human released. Process in board order (oldest first), reordered by
+dependency as described next.
+
+### 1a. Order Todo by dependency
+
+```
+1. board_order = the Todo tickets from Step 1, oldest first (unchanged).
+2. For each package p, one call:
+     get_ticket(project_id, p, include_relations=True, include_comments=False)
+   blockers[p] = [r.ticket_id for r in relations if r.kind == "blocked_by"]
+   On a provider whose list_relation_kinds provider_support lacks blocked_by
+   (GitLab), ALSO read the newest "## Dependency (gatekeeper)" comment's
+   <!-- gatekeeper:deps v1 ... --> block via list_comments and take its
+   blocked_by: line — same dumb key: value reader as adev:event, one more
+   block, no new mechanism. Skip that call entirely on github/azuredevops.
+3. Classify every blocker b (memoise per b for the whole run — see "When is
+   a blocker resolved" below):
+     - b resolved            -> drop the edge
+     - b in board_order      -> INTERNAL edge, orderable inside this run
+     - otherwise             -> EXTERNAL-OPEN
+4. Every package with an EXTERNAL-OPEN blocker is SKIPPED. Remove it from the
+   graph; do not move its card; report
+   `skipped: blocked by #<b> (<its column, or "closed elsewhere: no">)`.
+5. Topological order over what remains, INTERNAL edges only — Kahn with a
+   board-order tie-break, and no other heuristic:
+     ready = packages with no unsatisfied blocker, in board order
+     repeat: emit the FIRST of ready (board order); re-evaluate the packages
+             it unblocked; merge them back into ready keeping board order
+   Deterministic, and the only reordering this skill ever performs. There is
+   no priority field, no "smallest first", nothing else.
+6. Transitive skip: a package whose only blocker was itself SKIPPED is
+   SKIPPED too — `skipped: blocker #<b> skipped`.
+7. Cycle. Anything still unemitted when `ready` runs empty is in a cycle or
+   downstream of one. Emit those at the very END, in board order, and record
+   one line: `dependency cycle: #a -> #b -> #a, processed in board order`.
+   NEVER drop a package and NEVER abort the run for a cycle: a cycle is a
+   human's ten-second fix on the board, and losing a night's other seven
+   packages to it is the failure mode this skill exists to avoid.
+```
+
+Reading a blocker's ticket by id is not "touching Backlog or Planned". That
+rule forbids *selecting candidates from* and *writing to* those columns; it
+has never forbidden looking at one ticket you were pointed at. `run` still
+enumerates Todo only and still writes nothing outside Todo → Doing →
+Done/Question.
+
+### When is a blocker resolved
+
+A blocker `#b` counts as **resolved** when **any** of:
+
+1. `run` itself moved `#b` to **Done** earlier in this very run. Keep a
+   `done_this_run` set; it is authoritative and needs no re-read.
+2. `get_ticket(project_id, #b, include_custom_fields=True,
+   include_comments=False, include_relations=False)` returns
+   `custom_fields["Status"]` equal to the **native name of the logical `Done`**
+   column, from the map Precondition 2 already built.
+3. `#b` is `status: closed` **and** its board column is not one of `Backlog`,
+   `Planned`, `Todo`, `Doing` — a ticket closed without ever having been
+   queued (a duplicate, a wontfix, a hand-closed ticket, or an epic child
+   closed by a `Closes #<n>`). A ticket that is closed while sitting in
+   `Todo` is a contradiction: treat it as **not** resolved and record it,
+   because it is far more likely a mis-close than finished work.
+
+Everything else is **not** resolved: `Review` (PR open, CI running, or merge
+not permitted), `Question`, `Doing`, and no board item at all.
+
+**Why "closed" alone is not the test.** An epic package ticket is moved to
+the **Done column** by this skill and is *not* closed — only its children
+close, through `Closes #<n>` in the lower plugin's PR body. A `status`-only
+test would therefore report every finished epic as still blocking and skip
+its dependents forever. Symmetrically, an epic *child* is closed but never
+enters a column, so a column-only test would report finished work as still
+blocking. The column is the primary signal — comments are the log, columns
+are the signal — and `closed` is the fallback for tickets that never travel
+the board.
+
+One `get_ticket` per distinct blocker per run, memoised. Nothing here polls.
 
 ### 2. Per package, sequentially
 
@@ -124,9 +200,29 @@ are classified, and a conflict is a retry* below.
 
 **a. Claim + worktree.**
 
-**Gate on the previous package — verify, do not assume.** Skip this for the
-first package of the run (Step 0's pre-flight already swept every carried-over
-`pkg/*` PR).
+**Re-check blockers at dispatch time.** Re-read `blockers[p]` one last time,
+against the same resolved test as 1a. Step 1a's order was computed before any
+package ran; the run's own outcomes are the only new information, and they
+arrive too late for the ordering pass.
+
+- Every blocker resolved → proceed exactly as below.
+- A blocker that was in Todo did **not** reach Done — it ended in
+  `Question`, `Review` or `Doing` → **skip this package**. Leave the card in
+  **Todo**, do not move it to Doing, do not cut a worktree, do not start a
+  session, and record `skipped: blocker #<b> ended in <column>`. Then
+  continue with the next package. This is the
+  blocker-in-Todo-that-did-not-land case, and it degrades to the ordinary
+  skip on purpose: a package whose precondition did not land is exactly as
+  un-runnable as one whose blocker was never in Todo at all.
+
+A skip is never an abort and never a Question. Record it and continue — the
+same rule as every other failure mode in this skill.
+
+**Gate on the previous package — verify, do not assume.** Here "previous
+package" means the last package this run actually *processed*, in the
+dependency order from Step 1a — not necessarily the one immediately before it
+in board order. Skip this for the first package processed in the run (Step
+0's pre-flight already swept every carried-over `pkg/*` PR).
 
 ```
 still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>", limit=5)
@@ -343,18 +439,24 @@ continue. A stuck worktree never blocks the next package.
 
 ### 3. Final report
 
-One table: `package · result (Done / Question / Review) · note · PR · rounds
-(from the last event's `rounds`) · attempts`. `note` is empty for a clean
-Done, and otherwise one of: `merged after rebase`, `merged externally`,
+One table: `package · result (Done / Question / Review / Skipped) · note · PR
+· rounds (from the last event's `rounds`) · attempts`. `note` is empty for a
+clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `merge-not-permitted`, `blocked-escalated`,
-`manual cleanup: <path>`. Above the table, one line per carried-over PR found
-by the Step 0 pre-flight and one line per sequencing violation observed
-during the run (both named above).
+`manual cleanup: <path>`, `skipped: blocked by #<b> (<column>)`,
+`skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`.
+Above the table, one line per carried-over PR found by the Step 0 pre-flight,
+one line per sequencing violation observed during the run, and one line per
+dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,
+processed in board order`) — all named above.
 
 The run is **SUCCESS only if every package reached Done**. Anything else is
-**PARTIAL** with the list of what is not Done and where it sits. Never
-silently drop a package, and never write a "not included" list into any PR —
-the PR belongs to the lower plugin and describes one package only.
+**PARTIAL** with the list of what is not Done and where it sits. A skipped
+package makes the run PARTIAL, correctly — it is not Done. But it is a
+**benign** partial that names its own blocker and its own next step, unlike a
+failure; do not blur the two in the report. Never silently drop a package,
+and never write a "not included" list into any PR — the PR belongs to the
+lower plugin and describes one package only.
 
 ## Waiting rule
 
@@ -503,3 +605,8 @@ as an ordinary retry, just `attempt+1`.
 - **A merge conflict is a retry, not a Question.** One rebase attempt, same
   script, `attempt+1`, before it escalates. Branch protection, a missing
   permission, and an unresolved mergeability state remain human-only.
+- **A blocked package is skipped, never reordered past its blocker and never
+  escalated.** It stays in Todo; the next run picks it up once the blocker
+  reaches Done. See *1a. Order Todo by dependency*.
+- **A dependency cycle never stops the night.** Report it, process the
+  cycle's members in board order at the end, continue.
