@@ -1,0 +1,14 @@
+{
+  "name": "agent-ticket-orchestrator",
+  "version": "0.1.7",
+  "description": "Board-driven ecosystem orchestrator: bundles and clarifies Backlog tickets into released work packages (gatekeeper), then runs every Todo package unattended through agent-autonomous-developer to a merged, CI-green PR, moving board columns as the only status signal (run).",
+  "author": {
+    "name": "Arne von Appen"
+  },
+  "repository": "https://github.com/Seretos/agent-ticket-orchestrator",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Agent Ticket Orchestrator",
+    "shortDescription": "Board-driven ecosystem orchestrator: bundles and clarifies Backlog tickets into released work packages (gatekeeper), then runs every Todo package unattended through agent-autonomous-developer to a merged, CI-green PR, moving board columns as the only status signal (run)."
+  }
+}
