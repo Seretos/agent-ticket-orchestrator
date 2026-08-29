@@ -340,10 +340,32 @@ def test_clarifier_status_line_contract_is_intact():
     assert "prefix" in text.lower()
 
 
-def test_clarifier_forbids_clear_on_an_internal_only_ac():
+def test_clarifier_writes_the_ac_instead_of_asking_for_it():
+    """2026-08-29: an internal-only AC is repaired by the clarifier, not
+    turned into a question — the frame block carries the written AC."""
     text = _read(CLARIFIER)
     assert "internal:" in text
-    assert "not CLEAR" in text
+    assert "ac: as-filed" in text
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    assert "you write the AC" in section
+    assert "you reframe" in section
+    assert "not CLEAR" in section  # the one remaining case: symptom cannot be named
+
+
+def test_clarifier_has_the_five_question_filters():
+    text = _read(CLARIFIER)
+    section = _slice(text, "**3a. The question filter.**", "4. **Check readiness facts**")
+    assert "literal reading" in section
+    assert "scope" in section
+    assert "reframe" in section.lower()
+    assert "cost test" in section.lower()
+    assert "without opening the code" in section
+
+
+def test_clarifier_questions_carry_an_about_line():
+    text = _read(CLARIFIER)
+    assert "**About:**" in text
+    assert "does not have the code open" in text
 
 
 def test_clarifier_escape_hatch_exists_and_is_named():
@@ -389,8 +411,10 @@ def test_clarifier_ships_the_two_worked_frames():
     section = _slice(text, "## Two worked frames", "## Hard rules")
     assert "#148" in section
     assert "#90" in section
-    assert "NEEDS_INPUT" in section
-    assert "CLEAR" in section
+    assert "#156" in section
+    assert "the reframe is applied and" in section
+    assert "Zero questions" in section
+    assert "STATUS: CLEAR" in section
 
 
 def test_clarifier_never_rewrites_the_ticket():
@@ -403,6 +427,19 @@ def test_gatekeeper_applies_the_regression_chain_label_and_comment():
     assert "regression-chain" in text
     assert "create_label" in text
     assert "Regression chain (gatekeeper)" in text
+
+
+def test_gatekeeper_posts_the_frame_comment_when_the_ac_was_rewritten():
+    text = _read(GATEKEEPER)
+    assert "## Frame (gatekeeper)" in text
+    assert "as-filed" in text
+    assert "context-extractor" in text
+
+
+def test_gatekeeper_chain_comment_states_the_reframe():
+    text = _read(GATEKEEPER)
+    assert "Implemented as:" in text
+    assert "reframe and stay CLEAR" in text
 
 
 def test_gatekeeper_chain_comment_is_written_once():

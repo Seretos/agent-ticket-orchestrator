@@ -200,13 +200,19 @@ It ends with a status line:
 Questions the clarifier could have answered itself from ticket + code are its
 bug, not something to post — if you notice it asking such things, note it in
 the report, but still post the question rather than answering it yourself:
-you are not allowed to decide on the project's behalf either.
+you are not allowed to decide on the project's behalf either. The same goes
+for a question without an `**About:**` line, or one whose options read as
+code identifiers rather than user-visible behaviour: post it, flag it in the
+report as "clarifier question below the bar" — the human decides whether to
+answer or to send it back, and the flag is how the `clarifier` prompt gets
+fixed.
 
 **Parse the frame block.** The clarifier's report begins with a
 `<!-- clarifier:frame v1 … -->` block on **both** statuses. Parse it as dumb
 `key: value` lines — the same reader `run` applies to `adev:event`: empty
-value = unknown, unknown keys ignored. You need `symptom`, `measurement` and
-`depends_on` for every package, and `chain` for Step 3.6. If the block is
+value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
+`ac` and `depends_on` for every package, `chain` and `reframe` for Step 3.6,
+and `ac` again for Step 4's frame comment. If the block is
 missing or unparseable, record `frame block missing` in Step 5's report and
 continue on the `STATUS:` line alone — never abort a pass for a malformed
 block.
@@ -303,19 +309,23 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
 
    Symptom: <frame symptom>
    Measurement of this ticket's AC: <frame measurement>
+   Acceptance criterion: <frame ac, or "as filed">
+   Implemented as: <frame reframe, or "as filed — the ticket already has a symptom AC and a non-goal">
+
+   Object by replying on this ticket; otherwise the package is built this way.
    ```
 
-   Content comes from the clarifier's `### Frame` → *Prior attempts* lines,
-   verbatim — you have no code access and must not re-derive it. The MCP
-   prepends `#ai-generated`; do not add it yourself.
+   Content comes from the clarifier's `### Frame` lines, verbatim — you have
+   no code access and must not re-derive it. The MCP prepends
+   `#ai-generated`; do not add it yourself.
 4. The clarifier's root-cause mandate is already discharged: it detected the
-   chain and its own protocol obliged it either to reframe (staying CLEAR
-   only if the ticket already carries a symptom AC and a non-goal) or to
-   return `NEEDS_INPUT` with exactly the reframe question. **There is no
-   second dispatch.** Step 3's normal status handling then acts on that
-   status unchanged — two separate comments with intent: only the
-   `## Clarification needed (gatekeeper)` comment counts toward the existing
-   "4+ rounds" heuristic.
+   chain and its own protocol obliged it to **reframe and stay CLEAR** —
+   the reframe is applied and reported through this comment, never asked as
+   a question (until 2026-08-29 it was, and the alternative "proceed as
+   another point fix although #a and #b already did that" was never once
+   chosen). **There is no second dispatch.** Step 3's normal status handling
+   then acts on the status unchanged; only a `## Clarification needed
+   (gatekeeper)` comment counts toward the existing "4+ rounds" heuristic.
 
 Chain detection lives in the `clarifier`, not in a gatekeeper pre-pass: it
 already has `list_tickets`, "prior attempts" is one of its own three frame
@@ -330,7 +340,31 @@ the clarifier's read-only output into board state.
 
 ## Step 4 — release to Planned
 
-On CLEAR:
+On CLEAR, first the frame comment **if the clarifier rewrote the acceptance
+criterion** (`ac:` is anything other than `as-filed`) and Step 3.6 did not
+already post a `## Regression chain (gatekeeper)` comment carrying it:
+
+```
+add_comment(project_id, ticket_id=<package>, body=…)
+```
+
+```
+## Frame (gatekeeper)
+
+Symptom: <frame symptom>
+Acceptance criterion: <frame ac>
+<the clarifier's "Acceptance criterion" line's helper-measurement note, verbatim>
+
+The ticket's own finish line measured an internal quantity; the package is
+built and reviewed against the symptom above. Object by replying on this
+ticket.
+```
+
+This comment is load-bearing, not decoration: the lower plugin's
+`context-extractor` reads the package ticket's comments, and this is the only
+way a rewritten AC reaches the developer and the reviewer. Idempotent like
+Step 3.6 — skip it when an identical `## Frame (gatekeeper)` comment already
+exists. Then:
 
 ```
 update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>})
