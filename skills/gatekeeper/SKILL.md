@@ -1,7 +1,7 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package stays in Backlog and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run. Clear packages move to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
+description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
@@ -19,9 +19,13 @@ mid-list waiting for a reply defeats its own purpose the moment nobody is
 watching at that exact moment. A bundling decision is applied and reported,
 never confirmed first (see Step 2). A clarification question that cannot be
 answered from ticket, comments and code is posted **on the package ticket**
-and the package stays in Backlog — you move on to the next candidate
+and the package moves to **Question** — you move on to the next candidate
 immediately. The human answers in the ticket, at their own pace, and the
-next gatekeeper run picks the answer up.
+next gatekeeper run picks the answer up from the Question column. Question
+is the one place a human looks for "what needs me" across every project;
+a card waiting on an answer in Backlog is invisible among a hundred others
+(the user's own words, 2026-08-29, after the Backlog had grown across
+projects to the point where finding the asked-about tickets was work).
 
 ## Inputs
 
@@ -60,10 +64,11 @@ next gatekeeper run picks the answer up.
    `blocked_by` (GitLab) is **not** a stop condition — see Step 3.5's
    fallback.
 
-## Step 1 — enumerate the Backlog
+## Step 1 — enumerate the Backlog, and your own answered Question cards
 
 ```
 list_tickets(project_id, column="Backlog", status="open", limit=100)
+list_tickets(project_id, column="Question", status="open", limit=100)
 ```
 
 Then drop every ticket that is **already a child of an epic**: for each
@@ -72,7 +77,26 @@ candidate call `list_hierarchy(project_id, ticket_id)` and exclude it when
 epic, not the child, is what moves). Keep epics themselves in the list; the
 bundler may fold further tickets into them or leave them as-is.
 
-0 candidates → report "Backlog is empty / fully packaged" and stop.
+**Question cards are yours only when all three hold**, checked per card via
+`list_comments(order="desc")`:
+
+1. it carries a `## Clarification needed (gatekeeper)` comment — you put it
+   there;
+2. it carries **no** `<!-- adev:event` comment — it was never dispatched, so
+   it is not a card `run` escalated (those are `run`'s and a human's, never
+   yours, even if they also carry an older clarification comment);
+3. at least one comment is **newer** than your latest clarification comment —
+   somebody answered. A card with your question and nothing after it is still
+   waiting; skip it silently, nothing changed.
+
+Cards that pass go into the candidate list like any Backlog ticket — they
+are re-bundled and re-clarified the same way, and on `CLEAR` they move
+Question → Planned (Step 4). Cards that fail 2 or 3 are left exactly where
+they are and are not mentioned in the report except by count ("<n> Question
+cards still waiting, <m> belong to run").
+
+0 candidates → report "Backlog is empty / fully packaged, no answered
+Question cards" and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
 
@@ -182,16 +206,22 @@ It ends with a status line:
   `## Open Questions` section verbatim. The MCP prepends `#ai-generated`; do
   not add it yourself.
 
-  Leave the package in **Backlog** and move on to the **next** package
-  immediately — do not wait here. Record it in Step 5's report as "needs
-  answer — see ticket #<id>".
+  Then move the package ticket to **Question**:
 
-  A **repeat pass** (this package already carries an earlier
-  `## Clarification needed (gatekeeper)` comment, and the human has since
-  replied to it) re-dispatches the `clarifier` exactly as above; it reads the
-  reply itself. If it comes back `NEEDS_INPUT` again with the *same*
-  questions unanswered, treat it as still Backlog and move on — nothing
-  changed, nothing to redo. Count the `## Clarification needed (gatekeeper)`
+  ```
+  update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Question>})
+  ```
+
+  and move on to the **next** package immediately — do not wait here. Record
+  it in Step 5's report as "needs answer — see ticket #<id>". Only the
+  package ticket moves; an epic's children stay in Backlog, as in Step 4.
+
+  A **repeat pass** (this package came in through Step 1's Question branch —
+  it already carries an earlier `## Clarification needed (gatekeeper)`
+  comment and the human has since replied to it) re-dispatches the
+  `clarifier` exactly as above; it reads the reply itself. If it comes back
+  `NEEDS_INPUT` again, the new questions are posted and the card simply
+  stays in Question — nothing to move. Count the `## Clarification needed (gatekeeper)`
   comments on the ticket (`list_comments`); at **4 or more**, add one line to
   Step 5's report flagging the package as unusually hard to clarify — not a
   cap, not a block, just a signal that it may need a different kind of
@@ -221,7 +251,7 @@ block.
 
 Runs per package, immediately after its clarifier call returns, **on both
 statuses** (CLEAR and NEEDS_INPUT) — a dependency is a fact, not a decision,
-and a package that stays in Backlog does not make it false.
+and a package that goes to Question does not make it false.
 
 ```
 deps = bundler's depends_on for this package  ∪  clarifier frame's depends_on
@@ -370,6 +400,11 @@ exists. Then:
 update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>})
 ```
 
+This is the same call whether the package came from Backlog or from your own
+answered Question card (Step 1) — Question → Planned is the one move out of
+Question a skill makes, and only for a card the gatekeeper itself put there
+and a human has since replied on. `run`'s Question cards are never touched.
+
 Only the **package ticket** moves. Children of an epic stay exactly where they
 are (Backlog) — the board shows one card per unit of work, and the `run`
 enumerates Todo only, so a child never gets dispatched on its own.
@@ -394,24 +429,28 @@ Flag any package at 4+ `## Clarification needed (gatekeeper)` comments as
 unusually hard to clarify (see Step 3). Then one line: "Move the packages you
 want processed tonight from Planned to Todo by hand, then start
 `/agent-ticket-orchestrator:run project_id=<id>`." — plus, if any package
-needs an answer, "Answer the open questions above directly on their tickets,
-then run `/agent-ticket-orchestrator:gatekeeper` again to pick them up."
+needs an answer, "Answer the open questions directly on their tickets — they
+are all in the Question column — then run
+`/agent-ticket-orchestrator:gatekeeper` again to pick them up."
 
 ## Hard rules
 
 - **No `AskUserQuestion`, anywhere in this skill.** A bundling decision is
   applied and reported, not confirmed. A clarification question is posted on
   the ticket, not asked in chat. Nothing here waits on a live reply.
-- **Never block on one package.** A package that needs a human answer stays
-  in Backlog and you move straight to the next candidate — see Step 3.
+- **Never block on one package.** A package that needs a human answer goes
+  to Question and you move straight to the next candidate — see Step 3.
+- **Never touch a Question card you did not put there.** A card with an
+  `adev:event` comment belongs to `run` and the human — see Step 1.
 - **Never move anything to Todo.** Planned is your terminal column. Todo is
   written by humans only.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
   `blocked_by`/`relates_to` relations, labels (including `regression-chain`),
-  clarification comments, dependency comments, regression-chain comments, and
-  the Backlog → Planned move.
+  clarification comments, dependency comments, frame comments,
+  regression-chain comments, and the Backlog → Planned, Backlog → Question
+  and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body.
 - **Bundle before clarify**, always.

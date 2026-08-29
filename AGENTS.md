@@ -119,7 +119,7 @@ Two `claude` processes starting at the same moment race on `~/.claude.json` and 
 
 | skill | human | may `AskUserQuestion` | how it surfaces a question | writes |
 |---|---|---|---|---|
-| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, leaves it in Backlog, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/dependency/regression-chain comments, Backlog → Planned |
+| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, moves it to Question, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/frame/dependency/regression-chain comments, Backlog → Planned, Backlog → Question, Question → Planned (own answered cards only) |
 | `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names; leaves a blocked package untouched in Todo |
 
 `AskUserQuestion` is not part of this plugin at all — the last remaining use (confirming the
@@ -131,7 +131,7 @@ A human still has to start the `gatekeeper` session by hand — that has not cha
 no cron/headless trigger for it in this plugin yet — but once started it runs every candidate to
 completion in one pass instead of stalling on the first one that needs input.
 
-Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarification comments are posted on the package ticket, and a ticket that becomes an epic child afterwards would carry comments the run never reads. `Planned → Todo` is human-only; `Question → anywhere` is human-only. No skill here ever moves a card into Todo.
+Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarification comments are posted on the package ticket, and a ticket that becomes an epic child afterwards would carry comments the run never reads. `Planned → Todo` is human-only. `Question → anywhere` is human-only **except** for the one move `gatekeeper` makes on its own cards (2026-08-29): a Question card that carries a `## Clarification needed (gatekeeper)` comment, **no** `adev:event` comment (never dispatched, so not `run`'s), and a comment newer than the question goes back through bundle + clarify and, on CLEAR, straight to Planned. The ownership test is the `adev:event` comment, not the column — the ticket is the state store here too. Why Question and not Backlog for a gatekeeper question: across many projects the Backlog grew to the point where the handful of tickets actually waiting on a human were not findable; one column that means "needs me" is the whole point of the Question column, whichever skill asked. No skill here ever moves a card into Todo.
 
 ### Board model (shared GitHub Projects v2 board, logical names from `projects.yml`)
 
@@ -143,7 +143,7 @@ Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarificati
 | Doing | package dispatched | run |
 | Review | PR open, CI running / red / awaiting merge | lower plugin |
 | Done | merged, CI green — an epic reaches Done as a **column**; it is not closed, only its children close, via `Closes #<n>` | run |
-| Question | escalated; the question is a ticket comment | run in; **human only** out |
+| Question | needs a human; the question is a ticket comment | run in (after dispatch), gatekeeper in (before dispatch); **human only** out, except gatekeeper → Planned for its own answered cards |
 
 Logical names are the contract; native names (`"Frage offen"` vs `"Question"`) are resolved per call via `list_board_columns` and never hardcoded. Writes: `update_ticket(custom_fields={"Status": <native>})`. Reads: `list_tickets(column=<logical>)`. Comments are the log, columns are the signal; an empty Question column means no open questions.
 
