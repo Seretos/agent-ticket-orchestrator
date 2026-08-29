@@ -429,6 +429,26 @@ def test_gatekeeper_applies_the_regression_chain_label_and_comment():
     assert "Regression chain (gatekeeper)" in text
 
 
+def test_gatekeeper_moves_an_asked_package_to_question_not_backlog():
+    """2026-08-29: a package waiting on a human answer sits in Question, the
+    one column that means "needs me" across projects, instead of vanishing
+    into a Backlog of a hundred cards."""
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3 — clarify each package", "## Step 3.5")
+    assert "<native of Question>" in section
+    assert "Leave the package in **Backlog**" not in section
+
+
+def test_gatekeeper_reclaims_only_its_own_answered_question_cards():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 1", "## Step 2")
+    assert 'column="Question"' in section
+    assert "adev:event" in section       # ownership test: never dispatched
+    assert "newer" in section            # somebody answered
+    hard = text[text.index("## Hard rules"):]
+    assert "Never touch a Question card you did not put there" in hard
+
+
 def test_gatekeeper_posts_the_frame_comment_when_the_ac_was_rewritten():
     text = _read(GATEKEEPER)
     assert "## Frame (gatekeeper)" in text
