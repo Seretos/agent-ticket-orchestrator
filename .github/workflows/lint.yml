@@ -45,3 +45,25 @@ jobs:
         run: |
           pip install pytest
           python3 -m pytest tests/ -v
+
+  # The release scripts (.github/scripts/*.sh) must work identically on both
+  # OS runners lint.yml's other job doesn't cover: Windows is where a bare
+  # `bash` on PATH can resolve to the WSL stub instead of Git Bash
+  # (agent-comfy CI round 1), and tests/test_release_scripts.py resolves
+  # Git Bash by its well-known absolute path specifically to catch that. A
+  # separate job (not a matrix on `validate` above) because that job's own
+  # CRLF/frontmatter check is a bash-only `python3 - <<'EOF'` step that
+  # would fail outright under windows-latest's pwsh default shell.
+  release-scripts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run release scripts tests
+        run: |
+          pip install pytest
+          python -m pytest tests/test_release_scripts.py -v
