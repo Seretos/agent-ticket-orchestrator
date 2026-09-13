@@ -116,6 +116,11 @@ jobs:
           cp -a agents/. "$STAGE/agents/"
           # scripts/ is a release artifact: the run skill calls start-package-session.sh via ${CLAUDE_PLUGIN_ROOT}.
           mkdir -p "$STAGE/scripts" && cp -a scripts/. "$STAGE/scripts/"
+          # templates/ is a release artifact: the GitHub issue forms a project
+          # adopts via "## Adopting the forms in a project" (README.md) ship
+          # from here. Always exists in this repo, so copied unconditionally
+          # like agents/ and scripts/ above.
+          mkdir -p "$STAGE/templates" && cp -a templates/. "$STAGE/templates/"
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           # assets/ goes onto the orphan release branch so the dispatch

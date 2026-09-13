@@ -1,6 +1,6 @@
 # agent-ticket-orchestrator
 
-Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Two skills (`gatekeeper`, `run`), three subagents (`bundler`, `clarifier`, `triage`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
+Pure skill + agents plugin — no binary, no MCP server. The **upper** layer of the Seretos ticket pipeline: it selects, bundles, clarifies, dispatches, moves board columns and merges. The **lower** layer, `agent-autonomous-developer`, turns one work package into one CI-green PR and knows nothing about this plugin. Three skills (`gatekeeper`, `run`, `ticket`), three subagents (`bundler`, `clarifier`, `triage`). README.md covers *what* it does and how to install; the skills and agents document their own rules. This file records only what you cannot reconstruct from any single file.
 
 ## Installed per project; the project id comes from the repo
 
@@ -87,13 +87,35 @@ Hence three mandatory frame questions — symptom, measurement, prior attempts �
 
 **The frame is repaired, not asked about (2026-08-29).** The first version of this rule gated `STATUS: CLEAR` on the AC measuring the symptom and made the clarifier *ask* whether to extend it — and likewise asked whether to reframe a regression chain as a root-cause task. The first real pass (`lib-python-worktree` #156, #157, #158) produced eight questions, of which none was a decision: three were "extend the AC with the symptom, or keep the proxy?" (nobody picks the proxy), one was "reframe as root cause, or repeat the point fix that failed four times?", two recommended the ticket's own literal reading, one invented scope (cross-repo repair of an already-published release), and the last was a fail-open/fail-closed design choice whose "bad" outcome was a beta-only migration edge that heals on reboot — phrased in `StopDetail.reason` and `_pid_alive` call sites for a human who had not written the ticket and could not act on it. Hence: the clarifier **writes** the symptom AC (`ac:` in the frame block, posted by the gatekeeper as `## Frame (gatekeeper)` — load-bearing, because the lower plugin's `context-extractor` only sees the ticket's comments) and **applies** the reframe (`reframe:` in the frame block, stated in the `## Regression chain (gatekeeper)` comment), both with "object by replying on the ticket". A question must pass five filters in `agents/clarifier.md` § 3a (not the ticket's literal reading, no added scope, not a reframe, wrong answer costs a user something durable, answerable without the code open) and must open with an `**About:**` sentence for a reader who has not opened the ticket. The only frame-driven `NEEDS_INPUT` left is a defect whose symptom cannot be named at all.
 
+**A missing acceptance section is written, not asked about.** The same
+2026-08-29 principle extends to a ticket that has no acceptance section at
+all: when `ticket.acceptance_criteria` is empty or missing and the body
+carries no `## Acceptance` heading, the clarifier writes the AC itself,
+because the `## Frame (gatekeeper)` comment is the only channel through
+which a written AC reaches the developer at all — there is no ticket comment
+to reply to for something that was never asked. `premise:` exists for the
+companion gap: a plan can rest on a capability nobody has verified on *this*
+ticket — inherited, say, from an earlier clarification on a sibling ticket
+in the same repo — and that unverified assumption needs a name in the frame
+block, repeatable, one line per premise, or it silently becomes the plan's
+foundation instead of a fact someone can check.
+
+The GitHub issue forms under `templates/ISSUE_TEMPLATE/` and the `ticket`
+skill both draw their section labels from the clarifier's own heading
+vocabulary (`agents/clarifier.md`, "The heading vocabulary"), so a ticket
+filed by hand, through the `ticket` skill, or through a web form all carry
+headings the clarifier already knows how to read. Like `agents/`,
+`templates/` is therefore a release artifact — the release workflow's stage
+step must copy it onto the install tree, or a freshly installed project's
+forms silently vanish.
+
 **The escape hatch is narrow on purpose.** Most tickets in a prose/plugin repository like this one have no user-visible behaviour; a rule that turned them all into `NEEDS_INPUT` would be switched off within a week. `symptom: none:<category>` (`refactor, docs, ci, infra, test, chore, prose`) is the hatch; it is closed for anything labelled `bug`/`regression`/`defect` or describing a hang, crash, wrong result, slowness or leak.
 
 **Chain detection lives in the `clarifier`, one dispatch.** It already has `list_tickets`, and "prior attempts" is one of its own three frame questions; the `gatekeeper` only *applies* the finding (`regression-chain` label + chain comment, Step 3.6), the same shape it already uses for `## Open Questions`. A two-phase design (gatekeeper searches, then dispatches the clarifier with a mandate) would ask the weaker level first and pay a second Opus dispatch to re-tell the clarifier what it had already found.
 
 **The false-positive rule, and why cheap is correct.** A closed ticket only joins a chain when two of three signals hold (link/mention, same symptom verb, same module+symbol) — same-file-alone is never a chain. A wrong flag costs one label, one comment and one `NEEDS_INPUT` round a human clears in seconds; a missed chain costs three weeks and four tickets. Do not build a better detector.
 
-**Why there is no CI fixture for any of this.** The `clarifier` is an LLM judgement dispatched inside a session, not a function: a fixture harness would need a live `claude -p`, an API key in CI and a live tracker, and would still be non-deterministic. The worked examples therefore live in `agents/clarifier.md` ("Two worked frames") as prompt content — which changes behaviour — and `tests/test_pipeline_contract.py` asserts only that they are present and what outcome each states. **Do not "fix" this with a mock clarifier;** a test that asserts one hand-written string equals another tests nothing.
+**Why there is no CI fixture for any of this.** The `clarifier` is an LLM judgement dispatched inside a session, not a function: a fixture harness would need a live `claude -p`, an API key in CI and a live tracker, and would still be non-deterministic. The worked examples therefore live in `agents/clarifier.md` ("Worked frames") as prompt content — which changes behaviour — and `tests/test_pipeline_contract.py` asserts only that they are present and what outcome each states. **Do not "fix" this with a mock clarifier;** a test that asserts one hand-written string equals another tests nothing.
 
 ### Why state lives in the ticket, not in the return value
 
@@ -121,15 +143,24 @@ Two `claude` processes starting at the same moment race on `~/.claude.json` and 
 |---|---|---|---|---|
 | `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, moves it to Question, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/frame/dependency/regression-chain comments, Backlog → Planned, Backlog → Question, Question → Planned (own answered cards only) |
 | `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names; leaves a blocked package untouched in Todo |
+| `ticket` | at the keyboard, answering three questions | **yes — this is where it lives** | asks the symptom/measurement/prior-attempts questions live, in chat | one `create_ticket` call, nothing else |
 
-`AskUserQuestion` is not part of this plugin at all — the last remaining use (confirming the
-`bundler`'s package cut, and asking the `clarifier`'s open questions in chat) was removed: a
-bundling decision is applied and reported rather than confirmed, and a clarification question is
-posted on the ticket rather than asked live, so `gatekeeper` never blocks a run on somebody being
-present to answer (`skills/gatekeeper/SKILL.md`, "Nothing in this skill blocks on a chat answer").
-A human still has to start the `gatekeeper` session by hand — that has not changed, and there is
-no cron/headless trigger for it in this plugin yet — but once started it runs every candidate to
-completion in one pass instead of stalling on the first one that needs input.
+`AskUserQuestion` is forbidden for `gatekeeper` and `run` specifically — not
+banned from the plugin as a whole. Both must complete an entire pass
+unattended, and a skill that stops mid-list waiting for a reply defeats its
+own purpose the moment nobody is watching at that exact moment. A bundling
+decision is applied and reported, never confirmed first (see Step 2 of
+`gatekeeper`), and a clarification question that cannot be answered from
+ticket, comments and code is posted on the ticket rather than asked live, so
+`gatekeeper` never blocks a run on somebody being present to answer
+(`skills/gatekeeper/SKILL.md`, "Nothing in this skill blocks on a chat
+answer"). `ticket` is the opposite case: invoked precisely because a human
+is present and wants to file one ticket right now — its `AskUserQuestion`
+calls are not a leftover the other two forgot to remove, they are the reason
+the skill exists. A human still has to start the `gatekeeper` session by
+hand — that has not changed, and there is no cron/headless trigger for it in
+this plugin yet — but once started it runs every candidate to completion in
+one pass instead of stalling on the first one that needs input.
 
 Order inside `gatekeeper` is mandatory: **bundle, then clarify** — clarification comments are posted on the package ticket, and a ticket that becomes an epic child afterwards would carry comments the run never reads. `Planned → Todo` is human-only. `Question → anywhere` is human-only **except** for the one move `gatekeeper` makes on its own cards (2026-08-29): a Question card that carries a `## Clarification needed (gatekeeper)` comment, **no** `adev:event` comment (never dispatched, so not `run`'s), and a comment newer than the question goes back through bundle + clarify and, on CLEAR, straight to Planned. The ownership test is the `adev:event` comment, not the column — the ticket is the state store here too. Why Question and not Backlog for a gatekeeper question: across many projects the Backlog grew to the point where the handful of tickets actually waiting on a human were not findable; one column that means "needs me" is the whole point of the Question column, whichever skill asked. No skill here ever moves a card into Todo.
 

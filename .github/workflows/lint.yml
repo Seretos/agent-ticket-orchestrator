@@ -43,7 +43,7 @@ jobs:
 
       - name: Run tests
         run: |
-          pip install pytest
+          pip install pytest pyyaml
           python3 -m pytest tests/ -v
 
   # The release scripts (.github/scripts/*.sh) must work identically on both

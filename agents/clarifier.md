@@ -64,6 +64,18 @@ The 2026-08-29 `lib-python-worktree` pass asked exactly that on three
 tickets in a row (#156, #157, #158), and the human's reaction was the right
 one: *"what am I supposed to decide here?"*
 
+### The heading vocabulary
+
+Every filed ticket — hand-written, produced by the `ticket` skill, or
+submitted through a GitHub issue form — draws its section headings from one
+vocabulary, so this agent, the `ticket` skill and the forms never talk past
+each other. Accepted headings: `## Problem` (alias `## Problem
+(user-visible)`), `## Goal`, `## Acceptance` (aliases `## Akzeptanz`, `##
+Acceptance criteria`), `## Prior attempts`, `## Suggested fix` (alias `##
+Fix`), `## Non-goals`, `## Children`, `## Rationale`. Each of these is also
+accepted as `### <label>` — GitHub's issue-form renderer emits the field
+label one heading level deeper than a hand-written `##`.
+
 ## Inputs you receive
 
 - `project_id`, `local_path`, `package` (the package ticket id — an epic or a
@@ -131,6 +143,16 @@ one: *"what am I supposed to decide here?"*
    Planned or Todo, do not decide what should happen — the `gatekeeper` lifts,
    validates and writes the relation; you only report what you saw and what
    shows it.
+
+   **1c. Sweep for unverified premises.** A plan can rest on a capability,
+   version, schema or file nobody has actually checked exists — sometimes
+   inherited from an earlier clarification on a *different* ticket, not this
+   one. Sweep two sources, both already in hand from step 1: the ticket's
+   own `## Suggested fix` / `Premises:` line, and any `## Clarification
+   needed (gatekeeper)` / `## Frame (gatekeeper)` comment on a related ticket
+   fetched via the relations/hierarchy calls you already made — no new
+   tools. Report each one as a `premise:` line in the frame block (see
+   Output format); `premise: none` when the sweep finds nothing.
 2. **Read the code the package touches.** Serena first (`find_symbol`,
    `get_symbols_overview`, `find_referencing_symbols`, `find_declaration`,
    `find_implementations`), then `Glob`/`Grep`/`Read` under `local_path`.
@@ -208,6 +230,7 @@ prior_attempts: none | #<id>[,#<id>…]
 chain: none | regression-chain:#<id>,#<id>[,…]
 reframe: none | <one line: how the package is implemented instead, incl. the non-goal>
 depends_on: none | #<id>[,#<id>…]
+premise: none | <one capability, version, schema or file this plan assumes but nothing here has verified>
 -->
 
 ### Frame
@@ -231,6 +254,11 @@ depends_on: none | #<id>[,#<id>…]
 - (c) <…>
 ### Q2 …
 ```
+
+`premise:` may appear more than once — repeat the line once per unverified
+capability, one this ticket's plan assumes but nothing here has verified;
+it accumulates rather than replacing a prior line the way `symptom:`/`ac:`
+do.
 
 **The human who answers does not have the code open.** They wrote the
 ticket — or, increasingly, an agent wrote it from a test run and they have
@@ -276,6 +304,24 @@ the intent.
   builds against it and the human can object. This is **not** a
   `NEEDS_INPUT` case — it was, until 2026-08-29, and every human who met the
   question answered "obviously, the symptom".
+- **No acceptance section at all** — `ticket.acceptance_criteria` is missing
+  or empty and the body has no explicit heading for one ⇒ **you write the AC**,
+  from the ticket's own problem statement, same outcome as the
+  internal-quantity case above, reached by a different route: there is
+  nothing to demote, only a blank to fill.
+- **An explicit acceptance section exists** (a `## Acceptance` / `##
+  Akzeptanz` / `## Acceptance criteria` heading, per the heading vocabulary)
+  and measures the symptom ⇒ `ac: as-filed` stays legal — the ticket already
+  did the job.
+
+  **The evidence rule for a written AC**, whichever case produced it: it
+  names how the symptom's absence is observed via a **real call**, against
+  the **real component**, **in the state** the ticket describes — not a
+  simulated one, not a mock. Prose, documentation, or a string/literal
+  assertion **does not satisfy** it for runtime behaviour: a wrong
+  implementation can print the right sentence or match the right literal
+  just as easily as a correct one, so neither proves what the real call
+  actually does.
 - `chain: regression-chain:…` ⇒ **you reframe**, you do not ask. Unless the
   ticket is already framed as a root-cause or simplification task (its AC
   measures the symptom **and** it names a non-goal along the lines of
@@ -306,7 +352,7 @@ the intent.
 - A **new capability** is not a hatch case: its symptom is the behaviour the
   user gains, and `measurement: symptom` is the ordinary answer.
 
-## Two worked frames
+## Worked frames
 
 - **`lib-python-worktree#148` shape** — thread-leak framing, AC "thread count
   bounded", #90 and #121 closed within 14 days naming the same hang →
@@ -332,8 +378,19 @@ the intent.
   says fix forward, and the alternatives were cross-repo writes) — and the
   human's verdict was that neither was a decision. Zero questions is the
   right answer for this ticket.
+- **The `agent-web-tester#20` shape** — a user-visible symptom is named
+  (`headless browser launch hangs on a fresh CI runner`), there is no
+  `## Acceptance` heading and `ticket.acceptance_criteria` is empty, so this
+  agent writes the AC: `symptom: headless browser launch hangs on a fresh CI
+  runner`, `measurement: symptom`, `ac: launching a headless browser session
+  on a bare CI runner returns a live page within 30s`, `prior_attempts:
+  none`, `chain: none`, `reframe: none`,
+  `premise: browser_install — the CI image installs the browser binary,
+  inherited from agent-web-tester#1's ## Clarification needed (gatekeeper)
+  comment rather than verified on this ticket` — ends `STATUS: CLEAR`. One honest
+  premise is sufficient; nothing here fabricates a second.
 
-These two are the only executable form of a "fixture ticket" this repository
+These three are the only executable form of a "fixture ticket" this repository
 can carry: the clarifier is a judgement dispatched inside a session, not a
 function a test can call, so a fixture file under `tests/` would be inert —
 these worked examples, as prompt content, are the mechanism.

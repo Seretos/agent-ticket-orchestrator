@@ -145,9 +145,19 @@ For each accepted package with **two or more** tickets:
 1. `list_labels(project_id)` — if no `epic` label exists, `create_label`
    (GitHub 404s on an unknown label at `create_ticket` time).
 2. `create_ticket(project_id, title=<bundler title>, labels=["epic"], body=…)`
-   where the body lists the children (`- #<id> <title>`) and the bundler's
-   rationale. Omit `custom_fields` so the epic lands in Backlog like any new
-   ticket.
+   where the body has exactly two headings, matching the required fields of
+   `templates/ISSUE_TEMPLATE/epic.yml`:
+
+   ```
+   ## Children
+   - #<id> <title>
+   - #<id> <title>
+
+   ## Rationale
+   <the bundler's rationale, verbatim>
+   ```
+
+   Omit `custom_fields` so the epic lands in Backlog like any new ticket.
 3. `list_relation_kinds()` once, then link the epic to each child with
    `add_relation(project_id, ticket_id=<epic>, kind="parent", target="#<child>")`
    — `ticket_id` is always the *from* end, so `kind="parent"` on the epic
@@ -241,11 +251,26 @@ fixed.
 `<!-- clarifier:frame v1 … -->` block on **both** statuses. Parse it as dumb
 `key: value` lines — the same reader `run` applies to `adev:event`: empty
 value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
-`ac` and `depends_on` for every package, `chain` and `reframe` for Step 3.6,
-and `ac` again for Step 4's frame comment. If the block is
-missing or unparseable, record `frame block missing` in Step 5's report and
-continue on the `STATUS:` line alone — never abort a pass for a malformed
-block.
+`ac`, `premise` and `depends_on` for every package, `chain` and `reframe` for
+Step 3.6, and `ac` and `premise` again for Step 4's frame comment. `premise`
+may appear more than once — collect every occurrence, in the order they
+appear.
+
+**Render the premises line, once, here — Step 3.6 and Step 4 both reuse this
+exact rendering as defined in Step 3, rather than each inventing their own.**
+When the collected `premise` values are not `none`, render one line:
+
+  Premises to verify before planning: <p1>; <p2>; …
+
+joining every collected value with `; ` — two premises `browser_install` and
+`schema_v2_migrated` render as `Premises to verify before planning:
+browser_install; schema_v2_migrated`. A single premise still uses the same
+prefix, with one item and no separator. Omit the line entirely when
+`premise` is `none`.
+
+If the block is missing or unparseable, record `frame block missing` in
+Step 5's report and continue on the `STATUS:` line alone — never abort a
+pass for a malformed block.
 
 ## Step 3.5 — link dependencies
 
@@ -341,6 +366,7 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    Measurement of this ticket's AC: <frame measurement>
    Acceptance criterion: <frame ac, or "as filed">
    Implemented as: <frame reframe, or "as filed — the ticket already has a symptom AC and a non-goal">
+   Premises to verify before planning: <p1>; <p2>; … — rendered exactly as Step 3 defines; omit this line when `premise` is `none`
 
    Object by replying on this ticket; otherwise the package is built this way.
    ```
@@ -370,9 +396,9 @@ the clarifier's read-only output into board state.
 
 ## Step 4 — release to Planned
 
-On CLEAR, first the frame comment **if the clarifier rewrote the acceptance
-criterion** (`ac:` is anything other than `as-filed`) and Step 3.6 did not
-already post a `## Regression chain (gatekeeper)` comment carrying it:
+On CLEAR, first the frame comment. Post the frame comment when `ac:` is anything other than `as-filed` — either for that reason, or because
+`premise:` is not `none` — unless Step 3.6 already posted a `## Regression
+chain (gatekeeper)` comment carrying the same content:
 
 ```
 add_comment(project_id, ticket_id=<package>, body=…)
@@ -384,11 +410,19 @@ add_comment(project_id, ticket_id=<package>, body=…)
 Symptom: <frame symptom>
 Acceptance criterion: <frame ac>
 <the clarifier's "Acceptance criterion" line's helper-measurement note, verbatim>
+Premises to verify before planning: <p1>; <p2>; … — rendered exactly as Step 3 defines; omit this line when `premise` is `none`
 
-The ticket's own finish line measured an internal quantity; the package is
-built and reviewed against the symptom above. Object by replying on this
-ticket.
+<closing sentence — pick by trigger, never both>
 ```
+
+The closing sentence depends on which trigger fired the comment: when
+`ac:` differs from `as-filed`, use "The ticket's own finish line measured an
+internal quantity; the package is built and reviewed against the symptom
+above." — when the comment is posted solely because `premise:` is not `none`
+(the AC itself is `as-filed`, unchanged), that sentence is false and must be
+replaced with "The ticket's own acceptance criterion is unchanged; verify the
+premise(s) above before planning." Both variants end with the same final
+line: "Object by replying on this ticket."
 
 This comment is load-bearing, not decoration: the lower plugin's
 `context-extractor` reads the package ticket's comments, and this is the only
