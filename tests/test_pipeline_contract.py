@@ -42,6 +42,7 @@ README = REPO_ROOT / "README.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+MARKETPLACE_PAYLOAD_SCRIPT = REPO_ROOT / ".github" / "scripts" / "marketplace-payload.sh"
 
 
 def _slice(text: str, start: str, end: str) -> str:
@@ -194,15 +195,23 @@ def test_release_workflow_sends_a_changelog_field():
 
 
 def test_release_workflow_builds_the_dispatch_payload_with_jq_not_a_bare_heredoc():
-    text = _read(RELEASE_WORKFLOW)
-    assert "jq -n" in text
+    # The payload builder moved out of release.yml's inline YAML into its
+    # own script (agent-ticket-orchestrator#15) -- follow it there instead
+    # of asserting on inline `jq -n`, which the dispatch step no longer
+    # contains.
+    workflow_text = _read(RELEASE_WORKFLOW)
+    dispatch_step = workflow_text.split("Dispatch to agent-marketplace", 1)[1]
+    assert "marketplace-payload.sh" in dispatch_step
     # the old unquoted `-d @- <<EOF ... ${VAR} ...` pattern must be gone for
     # the dispatch step specifically -- a multi-line changelog would break it.
     # A real heredoc use is an unindented `<<EOF` starting a shell line, not
     # this pattern mentioned in an explanatory comment (`# ... <<EOF ...`).
-    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
     assert not re.search(r"^\s*[^#\n]*<<EOF", dispatch_step, re.MULTILINE)
     assert '-d "$PAYLOAD"' in dispatch_step
+
+    script_text = _read(MARKETPLACE_PAYLOAD_SCRIPT)
+    assert "jq -n" in script_text
+    assert not re.search(r"^\s*[^#\n]*<<EOF", script_text, re.MULTILINE)
 
 
 # --- B1: inter-ticket dependencies (agent-ticket-orchestrator#10) ----------
@@ -485,6 +494,7 @@ def test_agents_md_documents_both_new_mechanisms():
     text = _read(AGENTS_MD)
     assert "### Dependencies are relations" in text
     assert "### The frame comes before the questions" in text
+    assert "### Release notes are generated from `main` via `src/*` markers" in text
 
 
 # --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------

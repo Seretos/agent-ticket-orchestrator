@@ -5,3 +5,5 @@ Thumbs.db
 *.log
 __pycache__/
 .pytest_cache/
+.adev/
+.serena/

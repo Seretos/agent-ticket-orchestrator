@@ -25,31 +25,70 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Validate version is semver
-        shell: bash
-        run: |
-          V="${{ inputs.version }}"
-          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Version '$V' is not valid semver (expected MAJOR.MINOR.PATCH[-PRERELEASE])."
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Fail if tag already exists
+      # Pre-flight: validates the version, resolves this release's tag and
+      # the previous release's tag, and proves both src/* note-generation
+      # markers are in the state this scheme needs -- all before any side
+      # effect (no manifest stamp, no zip, no push, no tag, no dispatch).
+      # Absorbs the former standalone "Validate version is semver" step
+      # (the semver grammar now lives once, in prev-release-tag.sh's
+      # --validate mode, shared with the ordering logic below) and the
+      # former "Fail if tag already exists" step. Every read here
+      # (`git/ref/tags/*`, GitHub's singular "Get a reference" endpoint --
+      # the plural `git/refs/tags/...` is not a valid single-ref lookup and
+      # 404s unconditionally) is a GITHUB_TOKEN-scoped lookup on this repo's
+      # own refs -- `contents: write` already covers it, and a 404 is an
+      # expected, handled outcome, not an error.
+      - name: Pre-flight
+        id: pre
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          if [ "${{ github.ref_name }}" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Release must be run from the default branch ($DEFAULT_BRANCH), not ${{ github.ref_name }}. Re-run workflow_dispatch from $DEFAULT_BRANCH."
+            exit 1
+          fi
+
+          V="${{ inputs.version }}"
+          if ! bash .github/scripts/prev-release-tag.sh --validate "$V"; then
+            echo "::error::Version '$V' is not valid semver (expected MAJOR.MINOR.PATCH[-PRERELEASE])."
+            exit 1
+          fi
+
           PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
-          TAG="${PLUGIN_NAME}--v${{ inputs.version }}"
-          if gh api "repos/${{ github.repository }}/git/refs/tags/${TAG}" >/dev/null 2>&1; then
+          TAG="${PLUGIN_NAME}--v${V}"
+          MAIN_SHA=$(git rev-parse HEAD)
+
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
             echo "::error::Tag ${TAG} already exists. Delete it first or pick a new version."
             exit 1
           fi
+
+          if gh api "repos/${{ github.repository }}/git/ref/tags/src/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Marker tag src/${TAG} already exists. Versions are immutable -- a marker is never deleted or moved, so this should not happen; investigate before retrying."
+            exit 1
+          fi
+
+          PREV_TAG=$(git tag -l | bash .github/scripts/prev-release-tag.sh "$TAG")
+
+          if [ -n "$PREV_TAG" ]; then
+            if ! gh api "repos/${{ github.repository }}/git/ref/tags/src/${PREV_TAG}" >/dev/null 2>&1; then
+              echo "::error::Marker tag src/${PREV_TAG} does not exist, so release notes cannot be generated from main. One-time human bootstrap needed -- run:"
+              echo "::error::  git tag src/${PREV_TAG} <head_sha of ${PREV_TAG}'s release.yml run>"
+              echo "::error::  git push origin src/${PREV_TAG}"
+              exit 1
+            fi
+          fi
+
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Stamp version into plugin manifests (in CI only)
         shell: bash
@@ -94,6 +133,52 @@ jobs:
           echo "stage=$STAGE"      >> "$GITHUB_OUTPUT"
           echo "zip=dist/$ZIPNAME" >> "$GITHUB_OUTPUT"
 
+      # Marks the `main` commit this release was cut from. Pushed
+      # unconditionally -- pre-flight already proved src/$TAG's absence, so
+      # a "skip if exists" guard here would only ever hide a bug (and once
+      # did: a guard on this same tag re-empties the notes on a retried run
+      # by keeping a stale marker from a failed attempt, agent-comfy PR
+      # #55). A failed push here must fail the whole run. Placed after the
+      # build succeeds and before the orphan push, so a build failure never
+      # leaves a marker behind for a release that didn't happen.
+      - name: Push source tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.pre.outputs.tag }}"
+          MAIN_SHA="${{ steps.pre.outputs.main_sha }}"
+          git tag "src/${TAG}" "$MAIN_SHA"
+          git push origin "refs/tags/src/${TAG}"
+
+      # `gh release create --generate-notes` / `--notes-start-tag` cannot be
+      # used here: the orphan `release` tag/branch shares no history with
+      # `main` or any previous release tag (that parentlessness is this
+      # ticket's root cause), so GitHub's commit-graph walk for notes finds
+      # nothing. Generate them instead between the src/* markers, which DO
+      # live on `main` and therefore have real history to diff.
+      - name: Generate release notes from main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.pre.outputs.tag }}"
+          MAIN_SHA="${{ steps.pre.outputs.main_sha }}"
+          PREV_TAG="${{ steps.pre.outputs.prev_tag }}"
+
+          if [ -n "$PREV_TAG" ]; then
+            gh api "repos/${{ github.repository }}/releases/generate-notes" \
+              -f tag_name="src/${TAG}" \
+              -f target_commitish="$MAIN_SHA" \
+              -f previous_tag_name="src/${PREV_TAG}" \
+              --jq .body > "$RUNNER_TEMP/notes.md"
+          else
+            gh api "repos/${{ github.repository }}/releases/generate-notes" \
+              -f tag_name="src/${TAG}" \
+              -f target_commitish="$MAIN_SHA" \
+              --jq .body > "$RUNNER_TEMP/notes.md"
+          fi
+
       - name: Push orphan release branch and capture commit
         id: rel
         shell: bash
@@ -125,6 +210,14 @@ jobs:
           cp "$ZIP" "$ASSET_DIR/"
           echo "asset=$ASSET_DIR/$(basename "$ZIP")" >> "$GITHUB_OUTPUT"
 
+          # The dispatch step below runs after this step has replaced the
+          # worktree with the orphan tree, which has no .github/ at all --
+          # stash a copy of the scripts it needs outside the worktree first,
+          # same pattern as $TMP (stage tree) and $ASSET_DIR (zip) above.
+          SCRIPTS_DIR=$(mktemp -d)
+          cp -a .github/scripts/. "$SCRIPTS_DIR/"
+          echo "scripts=$SCRIPTS_DIR" >> "$GITHUB_OUTPUT"
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -154,13 +247,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
-          TAG="${PLUGIN_NAME}--v${{ inputs.version }}"
+          TAG="${{ steps.pre.outputs.tag }}"
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --target "${{ steps.rel.outputs.sha }}" \
             --title "$TAG" \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             ${{ contains(inputs.version, '-') && '--prerelease' || '' }} \
             "${{ steps.rel.outputs.asset }}"
 
@@ -176,33 +268,30 @@ jobs:
         run: |
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
-          TAG="${NAME}--v${VERSION}"
+          TAG="${{ steps.pre.outputs.tag }}"
 
           # Same notes already generated for the GitHub Release two steps
-          # above (`--generate-notes`) -- read them back rather than
-          # recomputing, so the two can never drift apart.
-          CHANGELOG=$(gh release view "$TAG" --repo "${{ github.repository }}" --json body -q .body)
+          # above -- read them back rather than recomputing, so the two can
+          # never drift apart. `&& printf x` + the trailing `%$'\n'` strip
+          # removes exactly the one newline `--jq .body` itself appends,
+          # without losing a trailing newline the changelog body may end
+          # with of its own accord (a bare `$(...)` strips ALL trailing
+          # newlines, which this sentinel avoids); `&&` is needed because
+          # `errexit` does not propagate out of a `$(...)` on its own.
+          CHANGELOG=$(gh release view "$TAG" --repo "${{ github.repository }}" --json body --jq .body && printf x); CHANGELOG="${CHANGELOG%x}"; CHANGELOG="${CHANGELOG%$'\n'}"
 
-          # Built with jq, not spliced into an unquoted heredoc: the
+          # Built by .github/scripts/marketplace-payload.sh with a single
+          # jq -n invocation, not spliced into an unquoted heredoc: the
           # changelog is multi-line markdown that can contain backticks,
           # quotes and newlines, any of which would break the old
           # `curl -d @- <<EOF` pattern and silently drop the whole dispatch
           # (agent-marketplace#235's contract note; the same thing already
-          # happened once with `tags`, see agent-marketplace@89aa850).
-          PAYLOAD=$(jq -n \
-            --arg name "$NAME" \
-            --arg desc "$DESC" \
-            --arg repo "${{ github.repository }}" \
-            --arg version "$VERSION" \
-            --arg ref "$TAG" \
-            --arg icon "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png" \
-            --arg description_url "https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md" \
-            --arg changelog "$CHANGELOG" \
-            '{event_type: "plugin-release", client_payload: {
-              name: $name, description: $desc, repo: $repo, category: "skill",
-              version: $version, ref: $ref, icon: $icon,
-              description_url: $description_url, changelog: $changelog
-            }}')
+          # happened once with `tags`, see agent-marketplace@89aa850). The
+          # script lives under .github/scripts, which no longer exists in
+          # this step's working tree (the previous step replaced it with
+          # the orphan tree) -- steps.rel.outputs.scripts is where it was
+          # copied to before that happened.
+          PAYLOAD=$(NAME="$NAME" DESC="$DESC" REPO="${{ github.repository }}" VERSION="$VERSION" TAG="$TAG" CHANGELOG="$CHANGELOG" bash "${{ steps.rel.outputs.scripts }}/marketplace-payload.sh")
 
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
