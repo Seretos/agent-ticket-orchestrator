@@ -1,13 +1,16 @@
-name: Task
-description: A change with no single user-visible symptom -- refactor, docs, CI, infra, chore -- filed in the frame shape the clarifier expects.
-labels: [task]
+name: Feature
+description: A new capability a user gains -- filed in the frame shape the clarifier expects.
+labels: [enhancement]
 body:
   - type: textarea
     id: goal
     attributes:
       label: Goal
-      description: What changes, and for whom -- the person or process that benefits.
-      placeholder: "Change X so that Y."
+      description: >
+        The behaviour the user gains: who can do what afterwards that they
+        cannot do today. A new capability is not a "no user-visible symptom"
+        case -- the symptom is the behaviour the user gains.
+      placeholder: "A user of X can Y, which today requires Z."
     validations:
       required: true
   - type: textarea
@@ -15,19 +18,17 @@ body:
     attributes:
       label: Acceptance
       description: >
-        For a runtime behaviour, state the evidence rule: a real call
-        against the real component, in the state described in Goal --
-        prose, documentation, or a string/literal assertion does not
-        satisfy it. For a non-runtime task, state instead what a reviewer
-        can check in the diff, output, result, or code.
-      placeholder: "A reviewer can check that the diff removes X."
+        State the evidence rule: a real call against the real component that
+        exercises the new behaviour. Prose, documentation, or a
+        string/literal assertion does not satisfy it.
+      placeholder: "Calling X with <input> returns <expected>."
     validations:
       required: true
   - type: textarea
     id: prior_attempts
     attributes:
       label: Prior attempts
-      description: Link any closed ticket that attempted the same change, or write "none".
+      description: Link any closed ticket that attempted the same capability, or write "none".
     validations:
       required: false
   - type: textarea

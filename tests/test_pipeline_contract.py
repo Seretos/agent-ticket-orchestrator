@@ -1052,6 +1052,7 @@ def test_issue_forms_parse_and_declare_required_fields():
     # membership.
     expected_required = {
         "bug.yml": {"Problem", "Acceptance", "Prior attempts"},
+        "feature.yml": {"Goal", "Acceptance"},
         "task.yml": {"Goal", "Acceptance"},
         "epic.yml": {"Children", "Rationale"},
     }
@@ -1086,7 +1087,7 @@ def test_issue_form_labels_match_the_gatekeeper():
     task = yaml.safe_load(_read(TEMPLATES / "task.yml"))
     assert bug.get("labels") == ["bug"]
     assert epic.get("labels") == ["epic"]
-    assert not task.get("labels")
+    assert task.get("labels") == ["task"]
 
 
 def test_epic_form_fields_match_the_gatekeeper_epic_body():

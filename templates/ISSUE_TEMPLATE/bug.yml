@@ -1,6 +1,5 @@
 name: Bug report
 description: A user-visible symptom -- a hang, crash, wrong result, slowness, or a leak -- filed in the frame shape the clarifier expects.
-title: "[bug] "
 labels: [bug]
 body:
   - type: textarea
