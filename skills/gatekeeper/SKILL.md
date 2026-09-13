@@ -144,16 +144,16 @@ For each accepted package with **two or more** tickets:
 
 1. `list_labels(project_id)` — if no `epic` label exists, `create_label`
    (GitHub 404s on an unknown label at `create_ticket` time).
-2. `create_ticket(project_id, title=<bundler title>, labels=["epic"], body=…)`
+2. `create_ticket(project_id, title=<bundler title>, labels=["epic"], template="epic", body=…)`
    where the body has exactly two headings, matching the required fields of
    `templates/ISSUE_TEMPLATE/epic.yml`:
 
    ```
-   ## Children
+   ### Children
    - #<id> <title>
    - #<id> <title>
 
-   ## Rationale
+   ### Rationale
    <the bundler's rationale, verbatim>
    ```
 

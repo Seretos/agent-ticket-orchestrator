@@ -1,6 +1,5 @@
 name: Epic
 description: A package of tickets bundled into one branch and one PR -- filed with the same headings the gatekeeper writes when it bundles a package itself.
-title: "[epic] "
 labels: [epic]
 body:
   - type: textarea
