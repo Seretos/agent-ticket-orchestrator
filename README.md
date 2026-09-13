@@ -11,7 +11,8 @@ Backlog ──gatekeeper──▶ Planned ──human──▶ Todo ──run─
                                                             └──────────────▶ Question ──human──▶ Todo / Backlog
 ```
 
-- **`/agent-ticket-orchestrator:gatekeeper`** — a human starts the session, but it does not block on one being at the keyboard while it runs. Reads the open Backlog, lets the `bundler` propose work packages (epics for tickets that collide in code, or effort batches of tiny tickets; everything else single) and applies the proposal directly — no confirmation round. Then lets the `clarifier` answer the ticket's problem frame (which user-visible symptom, whether the acceptance criterion actually measures it, prior attempts on the same symptom) before hunting every decision the night shift could not make on its own; a defect whose AC only measures an internal quantity gets a symptom-level AC written for it (posted as a `## Frame (gatekeeper)` comment), and a ticket that is the latest in a closed-ticket regression chain gets a `regression-chain` label and a comment stating how it is reframed as a root-cause task — both applied and reported, not asked. What is still asked has to survive a five-test filter (not the ticket's own literal reading, no added scope, not a reframe, a wrong answer must cost a user something durable, answerable without the code open) and is phrased for someone who has not opened the ticket. A question it cannot answer itself is posted **as a comment on the package ticket**, the package moves to the **Question** column (one place for everything that needs a human, across every project), and `gatekeeper` moves straight to the next package instead of waiting; the next pass picks answered cards up from Question and moves them on to Planned. An inter-package dependency (this package needs a capability another ticket introduces) becomes a `blocked_by` relation on the package ticket — the package **still** moves to **Planned** once otherwise clear; being blocked withholds only execution, not planning. `AskUserQuestion` is not used anywhere in this plugin.
+- **`/agent-ticket-orchestrator:gatekeeper`** — a human starts the session, but it does not block on one being at the keyboard while it runs. Reads the open Backlog, lets the `bundler` propose work packages (epics for tickets that collide in code, or effort batches of tiny tickets; everything else single) and applies the proposal directly — no confirmation round. Then lets the `clarifier` answer the ticket's problem frame (which user-visible symptom, whether the acceptance criterion actually measures it, prior attempts on the same symptom) before hunting every decision the night shift could not make on its own; a defect whose AC only measures an internal quantity gets a symptom-level AC written for it (posted as a `## Frame (gatekeeper)` comment), and a ticket that is the latest in a closed-ticket regression chain gets a `regression-chain` label and a comment stating how it is reframed as a root-cause task — both applied and reported, not asked. What is still asked has to survive a five-test filter (not the ticket's own literal reading, no added scope, not a reframe, a wrong answer must cost a user something durable, answerable without the code open) and is phrased for someone who has not opened the ticket. A question it cannot answer itself is posted **as a comment on the package ticket**, the package moves to the **Question** column (one place for everything that needs a human, across every project), and `gatekeeper` moves straight to the next package instead of waiting; the next pass picks answered cards up from Question and moves them on to Planned. An inter-package dependency (this package needs a capability another ticket introduces) becomes a `blocked_by` relation on the package ticket — the package **still** moves to **Planned** once otherwise clear; being blocked withholds only execution, not planning. `AskUserQuestion` is forbidden here and in `run`, both of which must complete a whole pass unattended; the `ticket` skill below is the one place in this plugin that uses it.
+- **`/agent-ticket-orchestrator:ticket`** — files one ticket, interactively, in the same frame shape the `clarifier` expects: a user-visible symptom, an acceptance criterion that measures it with a real call, prior attempts on the same symptom. Asks three questions with `AskUserQuestion` (the one skill in this plugin that does), then makes exactly one `create_ticket` call.
 - **You** answer any open questions directly on their tickets, and move the packages you want processed from Planned to **Todo**. Nothing automated ever does either.
 - **`/agent-ticket-orchestrator:run`** (from the project's main checkout; `project_id=<id>` overrides the repo-derived id) — unattended, may run all night. First finishes any `ci-green` package an earlier run left unmerged. Then orders every Todo package by its `blocked_by` relations — a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is left untouched in Todo and reported as skipped; a dependency cycle is reported and processed in board order rather than aborting the night. For each package in that order, sequentially: verify the previous package actually cleared, → Doing, create a worktree on `pkg/<id>-<slug>`, start `agent-autonomous-developer`'s `process-ticket` as a separate `claude -p` process in that worktree (from the skill's own turn, backgrounded) and wait for it to end. The lower plugin writes `adev:event` comments on the ticket and moves it to Review; `run` reads the latest event: `ci-green` → merge, → Done — and if the merge fails on a **conflict**, one rebase-and-retry round before it, too, escalates; branch protection / a missing permission / an unresolved mergeability state still → Review, human decides; `blocked` → triaged by a read-only subagent first (answerable → answered and re-dispatched immediately, not answerable → Question right away, no wasted retry); `failed`/no terminal event → checked directly against the PR's actual CI state first (a package that only died mid-CI-wait is not `failed`), then one fresh attempt if that does not resolve it, then → Question with the failure summary. Final report per package; SUCCESS only if everything reached Done.
 
@@ -20,6 +21,26 @@ Comments are the log, columns are the signal. An empty Question column means no 
 ## Board model
 
 The project's `~/.seretos/projects.yml` must bind a board with the logical columns `Backlog`, `Planned`, `Todo`, `Doing`, `Review`, `Done`, `Question` (native names are resolved live via `list_board_columns`; e.g. the native column may be called "Frage offen"). Required permissions: `issues.create/modify`, `pulls.create/modify/merge` (without `merge`, `run` leaves green packages in Review with a note), and `board.manage` once for creating missing columns with `ensure_board_column`.
+
+## Adopting the forms in a project
+
+To make a project's own hand-filed tickets follow this same frame shape:
+
+1. Copy `templates/ISSUE_TEMPLATE/*.yml` from this plugin into the project's
+   own `.github/ISSUE_TEMPLATE/` directory.
+2. Set `tickets.templates: enforce` in the project's `~/.seretos/projects.yml`
+   entry — inert until `agent-project-issues#307` ships the enforcement
+   check on the MCP side, but safe to set now.
+3. What changes, per audience: a **human** filing through the GitHub web UI
+   is presented with the form's fields instead of a blank body; an **agent**
+   calling `create_ticket` directly has the ticket **refused** when a
+   required section (per the heading vocabulary `agents/clarifier.md`
+   documents) is missing.
+
+Ensure the `bug` and `epic` labels exist in the target project before adopting
+`bug.yml`/`epic.yml` (create them via the project-issues MCP's `create_label`
+or the GitHub UI) — the form's default label is not created automatically,
+and GitHub 404s on an unknown label at ticket-creation time.
 
 ## Install
 
@@ -43,9 +64,10 @@ The project must be registered in `~/.seretos/projects.yml` with its `path` (`ow
 
 ## Layout
 
-- `skills/gatekeeper/SKILL.md`, `skills/run/SKILL.md` — the two entry points (both `disable-model-invocation: true`; invoke them explicitly).
-- `agents/bundler.md`, `agents/clarifier.md` — read-only Opus subagents used by `gatekeeper`. The `clarifier` also interrogates the ticket's problem frame and detects regression chains.
+- `skills/gatekeeper/SKILL.md`, `skills/run/SKILL.md`, `skills/ticket/SKILL.md` — the three entry points (all `disable-model-invocation: true`; invoke them explicitly). `ticket` is the one attended skill, filing a single ticket interactively.
+- `agents/bundler.md`, `agents/clarifier.md` — read-only Opus subagents used by `gatekeeper`. The `clarifier` also interrogates the ticket's problem frame, writes a missing acceptance criterion, records unverified premises, and detects regression chains.
 - `agents/triage.md` — read-only Opus subagent used by `run` to try to answer a `blocked` event before it costs a retry.
+- `templates/ISSUE_TEMPLATE/*.yml` — GitHub issue forms carrying the same heading vocabulary the `clarifier` and `ticket` skill use, for tickets filed by hand through the web UI.
 - `AGENTS.md` — the plugin's copy of the contract with `agent-autonomous-developer` (entry point, event table, reactions) and the design decisions behind it.
 
 ## Release

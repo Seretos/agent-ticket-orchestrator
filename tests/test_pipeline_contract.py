@@ -21,7 +21,7 @@ sections), never simulate the clarifier's or run's actual judgement. Ticket
 #11's acceptance criteria 3 and 4 ask for fixture-ticket behaviour that only a
 live `clarifier` dispatch could produce; this repo has no harness for that
 (no live `claude -p`, no API key, no tracker in CI), so the only executable
-form is the "Two worked frames" section in `agents/clarifier.md`, and
+form is the "Worked frames" section in `agents/clarifier.md`, and
 `test_clarifier_ships_the_two_worked_frames` below is the one test that
 checks it — it is not a substitute for actually running the clarifier against
 a real ticket.
@@ -30,9 +30,12 @@ a real ticket.
 import pathlib
 import re
 
+import yaml
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUN = REPO_ROOT / "skills" / "run" / "SKILL.md"
 GATEKEEPER = REPO_ROOT / "skills" / "gatekeeper" / "SKILL.md"
+TICKET_SKILL = REPO_ROOT / "skills" / "ticket" / "SKILL.md"
 AGENTS_DIR = REPO_ROOT / "agents"
 TRIAGE = AGENTS_DIR / "triage.md"
 BUNDLER = AGENTS_DIR / "bundler.md"
@@ -43,6 +46,7 @@ CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 MARKETPLACE_PAYLOAD_SCRIPT = REPO_ROOT / ".github" / "scripts" / "marketplace-payload.sh"
+TEMPLATES = REPO_ROOT / "templates" / "ISSUE_TEMPLATE"
 
 
 def _slice(text: str, start: str, end: str) -> str:
@@ -58,6 +62,28 @@ def _read(p: pathlib.Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _positions(text: str, pat) -> list:
+    """Start offsets of every match of `pat` in `text`. `pat` may be a plain
+    string (matched case-insensitively, literally) or a compiled regex."""
+    if isinstance(pat, str):
+        return [m.start() for m in re.finditer(re.escape(pat), text, re.IGNORECASE)]
+    return [m.start() for m in pat.finditer(text)]
+
+
+def _assert_near(text: str, a, b, window: int = 200, msg: str = "") -> None:
+    """Assert `a` and `b` each occur in `text`, with at least one occurrence
+    of each within `window` characters of the other. Used to bind a trigger
+    phrase to its outcome (or an exclusion to the rule it excludes from)
+    instead of letting two unrelated substrings anywhere in a large section
+    satisfy the same assertion."""
+    pa, pb = _positions(text, a), _positions(text, b)
+    assert pa, f"{a!r} not found in text"
+    assert pb, f"{b!r} not found in text"
+    assert any(abs(x - y) <= window for x in pa for y in pb), (
+        msg or f"{a!r} and {b!r} never occur within {window} chars of each other"
+    )
+
+
 def _frontmatter(text: str) -> dict:
     m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     assert m, "missing YAML front-matter"
@@ -67,6 +93,19 @@ def _frontmatter(text: str) -> dict:
             k, v = line.split(":", 1)
             fm[k.strip()] = v.strip()
     return fm
+
+
+def _clarifier_heading_labels() -> set:
+    """The canonical heading vocabulary from clarifier.md's own "The heading
+    vocabulary" subsection (package #19) — the set of ticket-body heading
+    labels every filed-ticket surface (the `ticket` skill, the GitHub issue
+    forms, the gatekeeper's epic body) must draw from. Each accepted heading
+    is documented as a backticked `## <Label>` (optionally with a
+    parenthetical alias or a separate backticked alias entry); this pulls out
+    just the `<Label>` text of every such backtick span in that subsection."""
+    text = _read(CLARIFIER)
+    section = _slice(text, "### The heading vocabulary", "## Inputs you receive")
+    return {m.strip() for m in re.findall(r"`##\s+([^`(]+?)`", section)}
 
 
 # --- A1: the pre-retry CI check (agent-ticket-orchestrator#8) --------------
@@ -355,7 +394,7 @@ def test_clarifier_writes_the_ac_instead_of_asking_for_it():
     text = _read(CLARIFIER)
     assert "internal:" in text
     assert "ac: as-filed" in text
-    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Worked frames")
     assert "you write the AC" in section
     assert "you reframe" in section
     assert "not CLEAR" in section  # the one remaining case: symptom cannot be named
@@ -379,14 +418,14 @@ def test_clarifier_questions_carry_an_about_line():
 
 def test_clarifier_escape_hatch_exists_and_is_named():
     text = _read(CLARIFIER)
-    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Worked frames")
     for category in ("refactor", "docs", "ci"):
         assert category in section.lower()
 
 
 def test_clarifier_escape_hatch_is_closed_for_bug_tickets():
     text = _read(CLARIFIER)
-    section = _slice(text, "## When STATUS: CLEAR is not available", "## Two worked frames")
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Worked frames")
     assert "bug" in section.lower()
     assert "closed" in section.lower()
 
@@ -417,7 +456,7 @@ def test_clarifier_ships_the_two_worked_frames():
     instead of under tests/, and this test only checks that they exist and
     state the outcome they claim to."""
     text = _read(CLARIFIER)
-    section = _slice(text, "## Two worked frames", "## Hard rules")
+    section = _slice(text, "## Worked frames", "## Hard rules")
     assert "#148" in section
     assert "#90" in section
     assert "#156" in section
@@ -497,12 +536,681 @@ def test_agents_md_documents_both_new_mechanisms():
     assert "### Release notes are generated from `main` via `src/*` markers" in text
 
 
+# --- C1: the written-AC evidence rule (agent-ticket-orchestrator#16) -------
+#
+# Package #19 closes the frame contract's remaining gap at three points on
+# one ticket's life: the clarifier writes an AC when a ticket has *no*
+# acceptance section at all (distinct from the 2026-08-29 case already
+# covered above, where a section exists but measures an internal quantity)
+# and records every unverifiable premise the plan rests on; the new `ticket`
+# skill and the GitHub issue forms produce the same shape up front. None of
+# the target files/sections these tests read exist yet -- RED here is
+# FileNotFoundError or "substring not found", not an import error.
+
+def test_clarifier_writes_the_ac_when_none_was_filed():
+    text = _read(CLARIFIER)
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Worked frames")
+
+    # F5-followup: bind `acceptance_criteria` to the actual detection
+    # condition (missing/empty/no acceptance section) via proximity -- a
+    # bare presence check could be satisfied by an incidental mention of
+    # the field elsewhere in this (large) section.
+    _assert_near(
+        section, "acceptance_criteria",
+        re.compile(r"no acceptance section|missing|empty", re.IGNORECASE),
+        window=200,
+        msg="the no-AC-filed detection must check the structured "
+            "`ticket.acceptance_criteria` field near the detection "
+            "condition itself (missing/empty/no acceptance section), not "
+            "merely mention the field somewhere in the section "
+            "(plan-critic finding on ticket #16)",
+    )
+    lowered = section.lower()
+    assert "no acceptance section" in lowered
+    assert "explicit acceptance section" in lowered
+    assert "as-filed" in section
+
+    # F5: five unjoined token presences don't constrain the branch->outcome
+    # mapping -- bind each trigger phrase to its actual outcome instead.
+    _assert_near(
+        section, "no acceptance section", "you write the ac",
+        msg="the 'no acceptance section' branch must map to 'you write "
+            "the AC' near it, not merely have both phrases appear "
+            "somewhere in the section",
+    )
+    _assert_near(
+        section, "explicit acceptance section", "as-filed",
+        msg="the 'explicit acceptance section' branch must map to "
+            "'as-filed' near it, not merely have both phrases appear "
+            "somewhere in the section",
+    )
+
+
+def test_written_ac_requires_real_call_evidence():
+    text = _read(CLARIFIER)
+    section = _slice(text, "## When STATUS: CLEAR is not available", "## Worked frames")
+    lowered = section.lower()
+    assert "real call" in lowered
+    assert "real component" in lowered
+    assert "in the state" in lowered
+
+    # F6: "prose" and "in the state" are ordinary words that can appear
+    # independently; require the exclusion to sit next to the verdict it
+    # excludes, and the verdict to sit next to the rule it is an exception
+    # to.
+    _assert_near(
+        section, "prose", "does not satisfy",
+        msg="the prose/documentation exclusion must sit next to the "
+            "'does not satisfy' verdict, not just appear somewhere in the "
+            "section",
+    )
+    _assert_near(
+        section, "does not satisfy", "real call",
+        window=300,
+        msg="'does not satisfy' must be stated in the same breath as the "
+            "real-call evidence rule it is an exception to",
+    )
+
+
+def test_frame_block_carries_repeatable_premise():
+    text = _read(CLARIFIER)
+    section = _slice(
+        text,
+        "## Output format (load-bearing — the gatekeeper parses the last line)",
+        "**The human who answers does not have the code open.**",
+    )
+    assert "premise:" in section
+
+    # F7: bind the repeatability claim to the `premise` key specifically --
+    # "more than once"/"accumulat" floating anywhere in this (large) section
+    # proves nothing about the premise key on its own. The generic
+    # unknown-key-tolerance disjuncts from the old version are dropped: the
+    # plan does not specify particular wording for that, so asserting on it
+    # was asserting on nothing in particular.
+    _assert_near(
+        section, "premise",
+        re.compile(r"more than once|\brepeats?\b|accumulat", re.IGNORECASE),
+        msg="the frame block's `premise:` key must be documented as "
+            "repeatable ('more than once'/'repeat'/'accumulat...') near "
+            "the key itself, not have that language float free elsewhere "
+            "in the section",
+    )
+
+
+def test_gatekeeper_renders_premises_in_both_comments():
+    text = _read(GATEKEEPER)
+    step3 = _slice(text, "## Step 3", "## Step 3.5")
+    step36 = _slice(text, "## Step 3.6", "## Step 4")
+    step4 = _slice(text, "## Step 4", "## Step 5")
+
+    rendering_prefix = "Premises to verify before planning:"
+
+    # F2: the exact rendering shape (with the trailing colon this test
+    # previously ignored), AND Step 3 -- not 3.6, not 4 -- is where the rule
+    # itself is defined once; 3.6/4 reuse it rather than re-defining it.
+    assert rendering_prefix in step3, (
+        "Step 3 must define the premise-rendering rule once, as the "
+        "canonical point, rather than leaving 3.6 and 4 to each invent "
+        "their own rendering"
+    )
+    assert rendering_prefix in step36
+    assert rendering_prefix in step4
+
+    # F2b: bare prefix presence doesn't constrain the multi-premise
+    # separator shape -- require Step 3's template to actually show how
+    # MULTIPLE premises are rendered (a separator, or an explicit
+    # one-line-per-premise note), not just the bare prefix followed by
+    # arbitrary prose.
+    prefix_idx = step3.index(rendering_prefix)
+    rendering_window = step3[prefix_idx: prefix_idx + 300]
+    assert (
+        "; " in rendering_window
+        or "one line per premise" in rendering_window.lower()
+        or re.search(
+            r"<p1>.*<p2>|premise 1.*premise 2",
+            rendering_window, re.IGNORECASE | re.DOTALL,
+        )
+    ), (
+        "Step 3's premise-rendering template must show how multiple "
+        "premises are joined/separated (e.g. '; ' or a 'one line per "
+        "premise' note), not just the bare prefix -- otherwise a "
+        "single-premise-only template would satisfy this just as well"
+    )
+
+    # F2c: Step 3.6 and Step 4 must REUSE Step 3's rule, not each redefine
+    # it from scratch -- require a "Step 3" reference near their own
+    # premises-rendering line.
+    for name, section in (("Step 3.6", step36), ("Step 4", step4)):
+        idx = section.index(rendering_prefix)
+        window = section[max(0, idx - 200): idx + 200]
+        assert "step 3" in window.lower(), (
+            f"{name} must reference Step 3 near its premises-rendering "
+            "line, reusing the rule defined there rather than "
+            "re-defining it independently"
+        )
+
+
+def test_gatekeeper_posts_frame_comment_on_either_condition():
+    text = _read(GATEKEEPER)
+    step4 = _slice(text, "## Step 4", "## Step 5")
+    ac_trigger = "`ac:` is anything other than `as-filed`"
+    assert ac_trigger in step4
+
+    # F1: "premise" must appear as an independent trigger condition -- a
+    # negation of `none` -- not merely be mentioned in passing; "or" alone
+    # matches any English prose and "premise" is already guaranteed present
+    # by another test in this slice, so neither constrained anything.
+    premise_trigger = re.search(
+        r"premise[^.\n]{0,80}(?:!=|is not|other than)\s*`?none`?",
+        step4, re.IGNORECASE,
+    )
+    assert premise_trigger, (
+        "Step 4 must state a `premise != none` trigger as an independent "
+        "condition for posting the frame comment, not merely mention "
+        "'premise' incidentally"
+    )
+
+    # the two conditions must be joined as alternatives ("posted on
+    # EITHER"), not just both happen to be true statements elsewhere in
+    # Step 4.
+    lo, hi = sorted([step4.index(ac_trigger), premise_trigger.start()])
+    between = step4[lo:hi]
+
+    # F1-followup: require the literal word "either" as a tight disjunction
+    # anchor -- an incidental "or" elsewhere between the two triggers is not
+    # enough, since ordinary prose between two mentioned conditions almost
+    # always contains an "or" somewhere without actually joining them as
+    # alternatives. Also refuse a gating/AND word sitting between them,
+    # which would mean the two conditions are joined as a conjunction (or a
+    # conditional), not alternatives.
+    assert re.search(r"\beither\b", between, re.IGNORECASE), (
+        "expected the ac-trigger and premise-trigger to be joined by the "
+        "literal word 'either', not merely an incidental 'or' somewhere "
+        "in the prose between them"
+    )
+    for negator in ("unless", "only if", " and "):
+        assert negator not in between.lower(), (
+            f"found {negator!r} between the ac-trigger and premise-trigger "
+            "-- expected a clean 'either ... or' disjunction, not a "
+            "gated/AND-joined condition"
+        )
+
+
+def test_clarifier_ships_the_missing_ac_worked_frame():
+    text = _read(CLARIFIER)
+    section = _slice(text, "## Worked frames", "## Hard rules")
+
+    # F3/F4: scope tightly to the #20 example's own text block, bounded by
+    # its own start marker and the next worked-example bullet (or the
+    # section end) -- otherwise a pre-existing worked frame (e.g. the #148
+    # shape, which already contains "STATUS: CLEAR" and "#1"-shaped tokens)
+    # could satisfy these assertions on its own.
+    start_marker = "agent-web-tester#20"
+    assert start_marker in section, "no agent-web-tester#20 worked example found"
+    start = section.index(start_marker)
+    rest = section[start + len(start_marker):]
+    next_bullet = re.search(r"\n- \*\*", rest)
+    end = start + len(start_marker) + next_bullet.start() if next_bullet else len(section)
+    example = section[start:end]
+
+    assert "browser_install" in example
+    assert "premise:" in example, (
+        "the #20 worked example must actually show a `premise:` line in "
+        "its own text, not merely exist somewhere in the file"
+    )
+    assert "STATUS: CLEAR" in example
+    assert "Clarification needed (gatekeeper)" in example
+    # MAJOR-followup: a bare "#1" substring check matches #16/#18/#19 (and
+    # any other #1x reference) -- require a delimited "#1" reference (not
+    # immediately followed by another digit).
+    assert re.search(r"#1(?!\d)", example), (
+        "the example must show the premise inherited from #1's "
+        "clarification as a delimited '#1' reference, scoped to the #20 "
+        "example itself -- not merely contain '#1' as a substring of "
+        "#16/#18/#19"
+    )
+
+
+# --- C2: the `ticket` skill (agent-ticket-orchestrator#17) -----------------
+
+def test_ticket_skill_exists_and_is_user_invocable():
+    fm = _frontmatter(_read(TICKET_SKILL))
+    assert fm.get("name") == "ticket"
+    assert fm.get("disable-model-invocation") == "true"
+
+
+def test_ticket_skill_body_headings_are_exactly_the_five():
+    text = _read(TICKET_SKILL)
+    fenced_blocks = re.findall(r"```(?:[a-zA-Z]*)\n(.*?)```", text, re.DOTALL)
+    template_headings: set = set()
+    for block in fenced_blocks:
+        template_headings.update(re.findall(r"^## (.+)$", block, re.MULTILINE))
+    assert template_headings == {
+        "Problem",
+        "Acceptance",
+        "Prior attempts",
+        "Suggested fix",
+        "Non-goals",
+    }
+
+
+def test_ticket_skill_files_one_ticket_with_label_discipline():
+    text = _read(TICKET_SKILL)
+    # F17: "one create_ticket" was checked as mere presence, not
+    # cardinality -- count call-shaped occurrences and require exactly one.
+    call_count = len(re.findall(r"create_ticket\(", text))
+    assert call_count == 1, (
+        f"expected exactly one create_ticket( call in the skill, found "
+        f"{call_count}"
+    )
+    assert "list_labels" in text
+    assert "create_label" not in text
+    assert "template=" not in text
+    assert "list_ticket_templates" not in text
+    # MINOR-followup: two more prohibitions the skill must respect (files
+    # exactly one ticket, no relation, no custom board-column write) were
+    # never actually asserted absent.
+    assert "add_relation" not in text
+    assert "custom_fields" not in text
+    lowered = text.lower()
+    for symptom in ("hang", "crash", "wrong result", "slow", "leak"):
+        assert symptom in lowered
+    assert "never edits code" in lowered
+    assert "never creates an epic" in lowered
+    assert "never moves a card" in lowered
+
+
+def test_ticket_skill_resolves_project_id_like_its_siblings():
+    text = _read(TICKET_SKILL)
+    assert "git remote get-url origin" in text
+    assert "project_id=" in text
+    # F18: the mechanism must be described in one place, not as two
+    # independently-appearing tokens.
+    _assert_near(
+        text, "git remote get-url origin", "project_id=",
+        window=250,
+        msg="the project-id resolution mechanism must be described in one "
+            "place -- 'git remote get-url origin' and 'project_id=' must "
+            "appear near each other, not scattered independently",
+    )
+
+
+def test_ticket_skill_asks_the_three_frame_questions_with_content():
+    text = _read(TICKET_SKILL)
+    lowered = text.lower()
+
+    # F15: no assertion previously mentioned AskUserQuestion, a question,
+    # or the symptom/measurement/prior-attempts triple structurally.
+    assert "AskUserQuestion" in text
+    for topic in ("symptom", "measurement", "prior attempt"):
+        assert topic in lowered
+
+    # F16: the none:<category> escape hatch must be the literal delimited
+    # pattern naming all seven categories together -- a SKILL.md that
+    # merely uses the English words "ci"/"test"/"docs"/"prose" incidentally
+    # elsewhere must not satisfy this.
+    hatch_pattern = re.compile(
+        r"none:<(?:refactor|docs|ci|infra|test|chore|prose)"
+        r"(?:\|(?:refactor|docs|ci|infra|test|chore|prose)){6}>"
+    )
+    assert hatch_pattern.search(text), (
+        "expected the literal `none:<cat1|cat2|...>` escape-hatch pattern "
+        "naming all seven categories together, matching the clarifier's "
+        "own vocabulary -- not incidental word matches"
+    )
+
+    assert "real call" in lowered
+    assert "prose" in lowered
+    assert 'status="closed"' in text
+    assert "search=" in text
+    assert "list_tickets" in text
+    assert "why the symptom survived" in lowered
+
+    # CRITICAL-followup: a bare \burl\b / "clear" / "open question" search
+    # over the WHOLE file can't fail -- \burl\b is already satisfied
+    # elsewhere by "git remote get-url origin" (which contains the word
+    # "url"), and "clear"/"open question" match unrelated prose ("state the
+    # symptom clearly", "leave no open question"). Scope this to a real
+    # "Output"/"When you're done" section, then check for a specific
+    # "ticket's URL" phrase (not the bare word "url", which the git-remote
+    # line already satisfies) and a CLEAR-or-open-question line within that
+    # section specifically.
+    output_match = re.search(r"##\s*(output|when you'?re done)", text, re.IGNORECASE)
+    assert output_match, (
+        "expected an 'Output' or \"When you're done\" section describing "
+        "what the skill's final message contains"
+    )
+    output_section = text[output_match.start():]
+    next_heading = re.search(r"\n#{1,3} ", output_section[1:])
+    if next_heading:
+        output_section = output_section[:next_heading.start() + 1]
+    output_lower = output_section.lower()
+
+    assert re.search(r"ticket'?s? url|url of the (?:filed |new )?ticket", output_lower), (
+        "expected the Output section to name the ticket's URL specifically "
+        "-- not the bare word 'url', which is already satisfied elsewhere "
+        "in the file by the unrelated 'git remote get-url origin' line"
+    )
+    assert "clear" in output_lower and re.search(r"open (?:frame )?question", output_lower), (
+        "expected the Output section to predict either CLEAR or name a "
+        "specific open frame question"
+    )
+
+
+# --- C3: AGENTS.md / README record the new mechanisms ----------------------
+
+def test_agents_md_scopes_askuserquestion_to_the_unattended_skills():
+    text = _read(AGENTS_MD)
+    section = _slice(text, "### Two skills, neither blocks on `AskUserQuestion`", "### Board model")
+
+    # F12: word-boundary-safe -- "run" must not be satisfied by "running",
+    # "ticket" must not be satisfied by "tickets" -- and each name must
+    # appear near an actual discussion of AskUserQuestion, not just
+    # anywhere in the section.
+    for name in (r"\bgatekeeper\b", r"\brun\b", r"\bticket\b"):
+        matches = list(re.finditer(name, section, re.IGNORECASE))
+        assert matches, f"{name!r} never appears in the AskUserQuestion-scoping section"
+        assert any(
+            "askuserquestion" in section[max(0, m.start() - 200): m.end() + 200].lower()
+            for m in matches
+        ), f"{name!r} appears but never near a discussion of AskUserQuestion"
+
+    # the old, now-false, unscoped claim must be genuinely gone -- check
+    # common paraphrases too, not only the exact original sentence.
+    old_claim_paraphrases = (
+        "not part of this plugin at all",
+        "askuserquestion is not part of this plugin",
+        "not used anywhere in this plugin",
+        "no skill here uses askuserquestion",
+    )
+    lowered = section.lower()
+    for phrase in old_claim_paraphrases:
+        assert phrase not in lowered, f"old unscoped claim survives as: {phrase!r}"
+
+    # a new, scoped statement must exist: gatekeeper/run specifically are
+    # named as where AskUserQuestion is forbidden.
+    # MINOR-followup: (gatekeeper|run) here lacked word boundaries too,
+    # matching "running"/"rerun" -- add \b so only the actual skill names
+    # count.
+    assert re.search(
+        r"(forbidden|never granted|not (?:used|available|granted))"
+        r".{0,120}\b(gatekeeper|run)\b"
+        r"|\b(gatekeeper|run)\b.{0,120}"
+        r"(forbidden|never granted|not (?:used|available|granted))",
+        section, re.IGNORECASE | re.DOTALL,
+    ), (
+        "expected a new statement scoping the AskUserQuestion ban to "
+        "gatekeeper/run specifically, not the removed blanket claim"
+    )
+
+
+def test_agents_md_records_the_written_ac_and_the_forms():
+    text = _read(AGENTS_MD)
+
+    # F13: scope the written-AC rationale to its actual home section --
+    # a whole-file substring search could be satisfied by an unrelated
+    # mention elsewhere.
+    frame_section = _slice(
+        text,
+        "### The frame comes before the questions",
+        "### Why state lives in the ticket, not in the return value",
+    )
+    assert "no acceptance section" in frame_section.lower(), (
+        "the written-AC-when-none-was-filed rationale belongs in "
+        "'The frame comes before the questions' section"
+    )
+
+    # F13: the forms-rationale check requires BOTH the clarifier's heading
+    # vocabulary AND templates/ as a release artifact, not either alone --
+    # an ISSUE_TEMPLATE mention with no vocabulary link proves nothing
+    # about the actual contract between the forms and the clarifier. Four
+    # independent whole-file token searches don't constrain that they are
+    # discussed together -- bind them via proximity instead.
+    assert "skills/ticket" in text or "`ticket`" in text
+    assert "ISSUE_TEMPLATE" in text
+    _assert_near(
+        text, "heading vocabulary", "templates/",
+        window=500,
+        msg="the forms-rationale must state the heading-vocabulary link "
+            "near the templates/-as-release-artifact fact, not as two "
+            "independent whole-file mentions",
+    )
+    _assert_near(
+        text, "templates/", "release artifact",
+        window=200,
+        msg="'templates/' and 'release artifact' must be discussed near "
+            "each other",
+    )
+
+
+def test_readme_documents_the_ticket_skill():
+    text = _read(README)
+    assert "/agent-ticket-orchestrator:ticket" in text
+
+    # MINOR-followup: a bare standalone-token check passes on the
+    # invocation string appearing anywhere, e.g. in a terse command index
+    # with no description. Bind it to descriptive words about what the
+    # skill actually does -- excluding "ticket" itself, since that word is
+    # already a substring of "agent-ticket-orchestrator" and would
+    # trivially self-satisfy any proximity check.
+    _assert_near(
+        text, "/agent-ticket-orchestrator:ticket",
+        re.compile(r"\bfile\b|\bsymptom\b|\bframe\b", re.IGNORECASE),
+        window=400,
+        msg="the invocation string must sit near descriptive words about "
+            "the skill (file/symptom/frame), not stand alone as a bare "
+            "token",
+    )
+
+
+def test_readme_form_adoption_covers_copy_config_and_both_audiences():
+    text = _read(README)
+    section = _slice(text, "## Adopting the forms in a project", "## Install")
+    assert ".github/ISSUE_TEMPLATE" in section
+    assert "tickets.templates: enforce" in section
+    assert "create_ticket" in section
+
+    refusal_verbs = ("refuse", "reject", "declin")
+    assert any(v in section.lower() for v in refusal_verbs), (
+        "expected the agent-audience half: create_ticket refuses a ticket "
+        "that skips the required headings"
+    )
+
+    # F14: the old test only checked the agent-refusal half of "both
+    # audiences" -- add the human/web-form half: what a person filing via
+    # the GitHub UI sees. A bare "web"/"form" match is satisfied by almost
+    # any prose about the templates themselves (e.g. "the form fields are
+    # YAML"), so bind it to human-audience language specifically.
+    _assert_near(
+        section,
+        re.compile(r"\bweb\b|\bform\b", re.IGNORECASE),
+        re.compile(r"\bhuman\b|\bfiling\b|\bpresents?\b", re.IGNORECASE),
+        window=200,
+        msg="expected the human-audience half: 'web'/'form' co-occurring "
+            "with 'human'/'filing'/'presents', describing what a person "
+            "filing through the GitHub web UI sees -- not a generic "
+            "'form' mention about the YAML templates themselves",
+    )
+
+    # F14: the "inert until agent-project-issues#307 ships" caveat must sit
+    # near the tickets.templates: enforce line, not float free elsewhere.
+    _assert_near(
+        section, "tickets.templates: enforce", "#307",
+        window=400,
+        msg="the 'inert until agent-project-issues#307 ships' caveat must "
+            "sit near the tickets.templates: enforce line",
+    )
+
+
+# --- C4: GitHub issue forms (agent-ticket-orchestrator#18) -----------------
+
+def test_issue_forms_parse_and_declare_required_fields():
+    vocab = _clarifier_heading_labels()
+    # F8: the original nested this vocabulary check inside "if required",
+    # so a form with nothing marked required passed vacuously. Assert the
+    # expected fields are actually required FIRST, then check vocabulary
+    # membership.
+    expected_required = {
+        "bug.yml": {"Problem", "Acceptance", "Prior attempts"},
+        "task.yml": {"Goal", "Acceptance"},
+        "epic.yml": {"Children", "Rationale"},
+    }
+    for name, expected in expected_required.items():
+        data = yaml.safe_load(_read(TEMPLATES / name))
+        required_labels = set()
+        for field in data.get("body", []):
+            attrs = field.get("attributes", {})
+            label = attrs.get("label")
+            if label is None:
+                continue
+            if field.get("validations", {}).get("required"):
+                required_labels.add(label)
+
+        missing = expected - required_labels
+        assert not missing, (
+            f"{name}: expected {sorted(expected)} to be marked "
+            f"`required: true`, but {sorted(missing)} were not -- a form "
+            "with nothing required would vacuously pass a vocabulary-only "
+            "check"
+        )
+        for label in required_labels:
+            assert label in vocab, (
+                f"{name}: required field {label!r} is not in the "
+                "clarifier's heading vocabulary"
+            )
+
+
+def test_issue_form_labels_match_the_gatekeeper():
+    bug = yaml.safe_load(_read(TEMPLATES / "bug.yml"))
+    epic = yaml.safe_load(_read(TEMPLATES / "epic.yml"))
+    task = yaml.safe_load(_read(TEMPLATES / "task.yml"))
+    assert bug.get("labels") == ["bug"]
+    assert epic.get("labels") == ["epic"]
+    assert not task.get("labels")
+
+
+def test_epic_form_fields_match_the_gatekeeper_epic_body():
+    epic = yaml.safe_load(_read(TEMPLATES / "epic.yml"))
+    required_labels = {
+        f["attributes"]["label"]
+        for f in epic.get("body", [])
+        if f.get("validations", {}).get("required")
+    }
+    assert required_labels == {"Children", "Rationale"}
+
+    gk_text = _read(GATEKEEPER)
+    section = _slice(
+        gk_text,
+        "### Materialise multi-ticket packages as epics",
+        "## Step 3 — clarify each package",
+    )
+    assert "## Children" in section
+    assert "## Rationale" in section
+
+
+def test_issue_forms_carry_the_evidence_rule_in_field_descriptions():
+    bug = yaml.safe_load(_read(TEMPLATES / "bug.yml"))
+    task = yaml.safe_load(_read(TEMPLATES / "task.yml"))
+    epic = yaml.safe_load(_read(TEMPLATES / "epic.yml"))  # F9: was never loaded
+
+    def field_by_label(doc, label):
+        for f in doc.get("body", []):
+            if f.get("attributes", {}).get("label") == label:
+                return f["attributes"]
+        raise AssertionError(f"{doc}: no field labelled {label!r}")
+
+    # F9: every required field across all three forms carries a non-empty
+    # description -- a required field with no description leaves a
+    # web-form filer with nothing to go on, and the old test never checked
+    # for this at all.
+    for name, doc in (("bug.yml", bug), ("task.yml", task), ("epic.yml", epic)):
+        for f in doc.get("body", []):
+            attrs = f.get("attributes", {})
+            if f.get("validations", {}).get("required"):
+                assert attrs.get("description", "").strip(), (
+                    f"{name}: required field {attrs.get('label')!r} has no "
+                    "description"
+                )
+
+    epic_children = field_by_label(epic, "Children")
+    assert epic_children.get("description", "").strip()
+    epic_rationale = field_by_label(epic, "Rationale")
+    assert epic_rationale.get("description", "").strip()
+
+    bug_acceptance = field_by_label(bug, "Acceptance")
+    desc = bug_acceptance.get("description", "").lower()
+    assert "does not satisfy" in desc or "does not count" in desc
+    assert "prose" in desc or "documentation" in desc or "string literal" in desc
+    assert "real call" in desc
+
+    # F10: "observ" alone passes on "What did you observe?", which names
+    # none of the three required things and never excludes an internal
+    # quantity as the observation.
+    bug_problem = field_by_label(bug, "Problem")
+    problem_desc = bug_problem.get("description", "").lower()
+    content_hits = sum(
+        1 for token in ("call", "state", "outcome", "result")
+        if token in problem_desc
+    )
+    assert content_hits >= 2, (
+        "Problem description must name at least two of call/state/"
+        f"outcome/result, got: {problem_desc!r}"
+    )
+    assert any(
+        phrase in problem_desc
+        for phrase in ("internal quantity", "counter", "thread count")
+    ), (
+        "Problem description must explicitly exclude an internal quantity "
+        f"(counter/thread count) as the observation, got: {problem_desc!r}"
+    )
+
+    # F11: word-boundary-safe "none" (the old check matched "nonetheless"),
+    # plus the specific "closed tickets" phrasing the plan requires.
+    bug_prior = field_by_label(bug, "Prior attempts")
+    prior_desc = bug_prior.get("description", "").lower()
+    assert re.search(r"\bnone\b", prior_desc), (
+        f"Prior attempts description must offer the literal word 'none', "
+        f"got: {prior_desc!r}"
+    )
+    assert "closed ticket" in prior_desc
+
+    # F11: task.yml's Acceptance must carry both the exclusion AND a
+    # positive statement of what a reviewer can check for a non-runtime
+    # task -- negation phrasing alone was the old, weaker check.
+    task_acceptance = field_by_label(task, "Acceptance")
+    task_desc = task_acceptance.get("description", "").lower()
+    assert "does not satisfy" in task_desc or "does not count" in task_desc
+
+    # MINOR-followup: a bare "check" match is satisfied by any incidental
+    # use of the word (e.g. "check the box"). Require "check" to co-occur
+    # with a concrete checkable noun -- diff/output/result/code -- so this
+    # actually states what a reviewer can check, not just that checking
+    # exists as a concept.
+    assert re.search(r"\breviewer\b", task_desc), (
+        "task.yml's Acceptance description must mention what a reviewer "
+        f"does for a non-runtime task, got: {task_desc!r}"
+    )
+    assert re.search(
+        r"check\w*\D{0,40}(diff|output|result|code)"
+        r"|(diff|output|result|code)\D{0,40}check",
+        task_desc,
+    ), (
+        "task.yml's Acceptance description must name a concrete checkable "
+        f"thing (diff/output/result/code) near 'check', got: {task_desc!r}"
+    )
+
+
 # --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------
 
 def test_every_parsed_markdown_file_is_lf_only():
     """lint.yml only checks skills/*/SKILL.md and agents/*.md for CRLF; this
     closes the gap for AGENTS.md, CLAUDE.md and README.md too, and matters
-    concretely here because these edits were made on Windows."""
-    paths = [AGENTS_MD, CLAUDE_MD, README, RUN, GATEKEEPER, BUNDLER, CLARIFIER, TRIAGE]
-    offenders = [str(p) for p in paths if b"\r\n" in p.read_bytes()]
+    concretely here because these edits were made on Windows. Extended for
+    package #19 to also cover the new `ticket` skill and the issue-form YAML
+    once they exist -- guarded with .exists() since, in the tests phase,
+    they don't yet."""
+    paths = [AGENTS_MD, CLAUDE_MD, README, RUN, GATEKEEPER, BUNDLER, CLARIFIER, TRIAGE, TICKET_SKILL]
+    if TEMPLATES.exists():
+        paths += sorted(TEMPLATES.glob("*.yml"))
+    offenders = [str(p) for p in paths if p.exists() and b"\r\n" in p.read_bytes()]
     assert offenders == []
