@@ -1201,6 +1201,388 @@ def test_issue_forms_carry_the_evidence_rule_in_field_descriptions():
     )
 
 
+# --- D1: #25 bundler ordering is not a collision; verified relation writes -
+#
+# A gatekeeper pass cut two large tickets -- one of which itself sequenced
+# their overlap ("a second step after #9") -- into one collision epic, then
+# wrote only one of the five dependency relations the bundler reported. This
+# package (a) teaches the bundler that a ticket's own sequencing statement is
+# `depends_on`, never `collision` (R1), ships the #9/#14 worked example (R2),
+# caps a `collision` package at one `large` ticket and owes a `recut` for an
+# overlapping large pair the cap rejects (R3), (b) has the gatekeeper reject
+# an oversized collision package into `single`s (R4), post the recut as a
+# `## Frame (gatekeeper)` comment on both endpoints (R5), carry `previous_cut`
+# across passes with a named-change gate (R6), and (c) makes Step 3.5's
+# relation read-back mechanically verified via
+# `scripts/gatekeeper/relation-readback.py` rather than prose bookkeeping
+# (R7; the script's own driving tests live in tests/test_relation_readback.py).
+# R8 (docs) and R9 (a live gatekeeper pass) are evidence kind `none` per the
+# plan -- no driving test for either.
+#
+# Per this package's own test-design rule: a bare literal-presence assertion
+# is permitted only for R2 (the "is the worked example shipped" check, this
+# repo's accepted idiom) -- every other assertion here binds a trigger to its
+# verdict via `_assert_near` plus an explicit negation or exact-set check
+# that an inverted implementation would fail.
+
+def test_bundler_sequencing_clause_is_depends_on_not_collision():
+    text = _read(BUNDLER)
+    section = _slice(text, "3. **Cut packages.**", "4. **Respect explicit structure.**")
+
+    _assert_near(
+        section, "sequenc", "depends_on", window=200,
+        msg="the new sequencing clause must sit near `depends_on` -- a "
+            "sequencing rule stated without resolving to depends_on proves "
+            "nothing",
+    )
+    assert re.search(
+        r"never[^.]{0,150}\bcollision\b|\bcollision\b[^.]{0,150}never",
+        section, re.IGNORECASE,
+    ), "expected 'never' and 'collision' bound together in one clause"
+
+    assert "is the other's precondition" not in section, (
+        "the removed clause ('or one ticket's change is the other's "
+        "precondition') must actually be gone, not just supplemented"
+    )
+
+    # negative guard: an implementation stating the OPPOSITE rule (a
+    # sequencing statement IS a collision) must fail this test too.
+    assert not re.search(
+        r"sequenc\w+[^.]{0,120}is (a )?`?collision", section,
+    ), "found prose stating the opposite of the sequencing rule"
+
+    # edge case: the pre-existing collision/dependency distinction paragraph
+    # must survive this edit.
+    assert "Collision and dependency are different findings" in text
+
+
+def test_bundler_ships_the_worked_cut():
+    text = _read(BUNDLER)
+    section = _slice(text, "## Worked cuts", "## Hard rules")
+
+    # bare presence is deliberate here and only here (this package's own
+    # test-design rule) -- the verdict assertions below carry the polarity.
+    assert "#9" in section
+    assert "#14" in section
+    assert "a second step after #9" in section
+
+    assert "depends_on" in section
+    assert re.search(
+        r"\bnot\b[^.\n]{0,100}\b(collision|epic)\b"
+        r"|\b(collision|epic)\b[^.\n]{0,100}\bnot\b"
+        r"|\bnever\b[^.\n]{0,100}\b(collision|epic)\b",
+        section, re.IGNORECASE,
+    ), "expected a line rejecting the collision/epic reading of the #9/#14 case"
+
+
+def test_bundler_schema_requires_size_and_caps_collision():
+    text = _read(BUNDLER)
+    fenced = re.search(r"```json\n(.*?)```", text, re.DOTALL)
+    assert fenced, "no fenced JSON block found in agents/bundler.md"
+    json_block = fenced.group(1)
+
+    assert re.search(r'"tickets":\s*\[\s*\{[^}]*"size"', json_block), (
+        "'tickets' must be an array of objects carrying 'size', not a bare "
+        "array of ids"
+    )
+    assert not re.search(r'"tickets":\s*\[\s*<id>', text), (
+        "the old bare-id 'tickets': [<id>, ...] form must be gone -- exactly "
+        "one 'tickets' shape after this change"
+    )
+    for size in ("small", "medium", "large"):
+        assert f'"{size}"' in json_block, f"expected size enum value {size!r} in the schema"
+
+    cap_sentence = (
+        re.search(r"[^.\n]*\bcollision\b[^.\n]*\bat most one\b[^.\n]*\blarge\b[^.\n]*\.", text, re.IGNORECASE)
+        or re.search(r"[^.\n]*\bat most one\b[^.\n]*\blarge\b[^.\n]*\bcollision\b[^.\n]*\.", text, re.IGNORECASE)
+    )
+    assert cap_sentence, (
+        "expected a sentence naming 'collision', 'at most one', and 'large' "
+        "together -- the cap rule"
+    )
+
+    # polarity guard: the cap is on `collision` only -- a sentence stating
+    # 'at most one ... large' must never also rope in `effort`, which keeps
+    # its own independent ~5-ticket cap.
+    for sentence in re.split(r"\.\s+", text):
+        if "at most one" in sentence.lower():
+            assert "effort" not in sentence.lower(), (
+                f"the collision-only cap sentence must not mention 'effort': {sentence!r}"
+            )
+
+    # edge case: effort's own cap sentence must still be present, untouched.
+    assert "~5" in text
+
+
+def test_bundler_owes_a_recut_for_two_large_overlapping_tickets():
+    text = _read(BUNDLER)
+    sentences = re.split(r"\.\s+", text)
+
+    overlap_sentence = None
+    for s in sentences:
+        low = s.lower()
+        if ("two" in low or "both" in low) and "large" in low and "overlap" in low:
+            overlap_sentence = s
+            break
+    assert overlap_sentence, (
+        "expected a sentence binding two/both + large + overlap -- the "
+        "two-large-and-overlapping trigger"
+    )
+    assert re.search(r"\bmust\b|\balways\b", overlap_sentence, re.IGNORECASE), (
+        f"expected an obligation verb (must/always) in: {overlap_sentence!r}"
+    )
+    assert "recut" in overlap_sentence.lower()
+
+    # negation guard: the obligation must not be softened back into an option.
+    for softener in ("optional", "may", "can"):
+        assert not re.search(rf"\b{softener}\b", overlap_sentence, re.IGNORECASE), (
+            f"the overlap sentence must not contain {softener!r}, which "
+            f"would soften the duty back into an option: {overlap_sentence!r}"
+        )
+
+    # a separate, opposite-polarity check: the non-overlapping rejected-pair
+    # case must be stated as owing NO recut, so an implementation that
+    # demands a recut for every rejected large pair (overlapping or not)
+    # also fails this test.
+    non_overlap_sentence = None
+    for s in sentences:
+        low = s.lower()
+        if "non-overlap" in low or "no overlap" in low or "not overlap" in low:
+            non_overlap_sentence = s
+            break
+    assert non_overlap_sentence, (
+        "expected a sentence stating that the non-overlapping rejected pair "
+        "emits no recut"
+    )
+    assert re.search(
+        r"\bno\b[^.\n]{0,40}\brecut\b|\brecut\b[^.\n]{0,40}\bno\b",
+        non_overlap_sentence, re.IGNORECASE,
+    ), f"expected 'no recut' bound in: {non_overlap_sentence!r}"
+
+
+def test_gatekeeper_rejects_oversized_collision_package():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 2", "## Step 3 — clarify each package")
+
+    reject_sentence = None
+    for s in re.split(r"\.\s+", section):
+        low = s.lower()
+        if ("two" in low or "more than one" in low) and "large" in low and "reject" in low and "single" in low:
+            reject_sentence = s
+            break
+    assert reject_sentence, (
+        "expected a Step 2 sentence binding two/more-than-one + large -> "
+        "reject -> single"
+    )
+
+    low = reject_sentence.lower()
+    idx_large = low.index("large")
+    idx_reject = low.index("reject")
+    idx_single = low.index("single")
+    assert idx_large < idx_reject < idx_single, (
+        "expected the elements bound in order: large -> reject -> single, "
+        f"got: {reject_sentence!r}"
+    )
+
+    start = section.index(reject_sentence)
+    window = section[max(0, start - 250): start + len(reject_sentence) + 250]
+    assert "depends_on" in window, (
+        "expected 'depends_on' (still written per member) within 250 chars "
+        "of the rejection sentence"
+    )
+
+    assert "epic" not in low, (
+        "the rejection sentence must not mention creating an epic -- "
+        f"rejected members become single packages: {reject_sentence!r}"
+    )
+
+    # edge case: a one-large collision package is still materialised as an
+    # epic -- the existing heading must survive untouched.
+    assert "### Materialise multi-ticket packages as epics" in text
+
+
+def test_gatekeeper_applies_recut_to_both_endpoints():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.7", "## Step 4")
+
+    frame_idx = section.index("## Frame (gatekeeper)")
+
+    add_req_match = re.search(r"^.*Additional requirement \(re-cut from #.*$", section, re.MULTILINE)
+    assert add_req_match, "expected a line with 'Additional requirement (re-cut from #'"
+    add_req_line = add_req_match.group(0)
+    add_ctx = section[max(0, add_req_match.start() - 150): add_req_match.end()]
+    assert "target" in add_ctx.lower(), (
+        f"expected the 'Additional requirement' line's context to name the "
+        f"target endpoint: {add_ctx!r}"
+    )
+    assert "source" not in add_ctx.lower(), (
+        f"the 'Additional requirement' line's context must not name the "
+        f"source endpoint (direction-inversion guard): {add_ctx!r}"
+    )
+    assert add_req_match.start() > frame_idx, (
+        "the 'Additional requirement' line must sit inside the block "
+        "introduced by '## Frame (gatekeeper)'"
+    )
+
+    non_goal_match = re.search(r"^.*Non-goal \(re-cut to #.*$", section, re.MULTILINE)
+    assert non_goal_match, "expected a line with 'Non-goal (re-cut to #'"
+    non_goal_ctx = section[max(0, non_goal_match.start() - 150): non_goal_match.end()]
+    assert "source" in non_goal_ctx.lower(), (
+        f"expected the 'Non-goal' line's context to name the source "
+        f"endpoint: {non_goal_ctx!r}"
+    )
+    assert "target" not in non_goal_ctx.lower(), (
+        f"the 'Non-goal' line's context must not name the target endpoint "
+        f"(direction-inversion guard): {non_goal_ctx!r}"
+    )
+    assert non_goal_match.start() > frame_idx, (
+        "the 'Non-goal' line must sit inside the block introduced by "
+        "'## Frame (gatekeeper)'"
+    )
+
+    assert "no epic" in section.lower()
+    assert "object by replying" in section.lower()
+
+    # edge case: the third closing-sentence variant (recut-only trigger) is
+    # present -- a fourth copy of one of Step 4's two (false, for this case)
+    # variants must fail this.
+    third_variant = (
+        "The ticket's own acceptance criterion is unchanged; the re-cut "
+        "line above is part of this package's frame."
+    )
+    assert third_variant in section, (
+        "expected the third closing-sentence variant, verbatim, for the "
+        "recut-only trigger"
+    )
+
+
+def test_gatekeeper_recut_frame_comment_is_not_clear_only():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.7", "## Step 4")
+
+    first_para = section.split("\n\n", 1)[0]
+    assert re.search(r"\bboth\b", first_para, re.IGNORECASE), (
+        f"expected Step 3.7's opening paragraph to say 'both': {first_para!r}"
+    )
+    assert "CLEAR" in first_para and "NEEDS_INPUT" in first_para, (
+        f"expected both statuses named in Step 3.7's opening paragraph: {first_para!r}"
+    )
+    assert not first_para.strip().lower().startswith("on clear"), (
+        "Step 3.7 must not open with 'On CLEAR' -- that is Step 4's "
+        "CLEAR-only trigger, and Step 3.7 runs on both statuses"
+    )
+
+    step4 = _slice(text, "## Step 4", "## Step 5")
+    deferral_sentence = None
+    for s in re.split(r"\.\s+", step4):
+        if "Step 3.6" in s and "already posted" in s.lower():
+            deferral_sentence = s
+            break
+    assert deferral_sentence, "expected Step 4's deferral clause naming Step 3.6"
+    assert "Step 3.7" in deferral_sentence, (
+        "expected Step 4's deferral clause widened to name Step 3.7 "
+        f"alongside Step 3.6: {deferral_sentence!r}"
+    )
+
+
+def test_gatekeeper_passes_previous_cut_and_requires_named_change():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 2", "## Step 3 — clarify each package")
+
+    assert "previous_cut" in section
+    _assert_near(section, "previous_cut", "Question", window=300)
+    _assert_near(section, "previous_cut", "include_relations=True", window=300)
+    _assert_near(section, "previous_cut", "## Frame (gatekeeper)", window=400)
+
+    assert "prior_rationale" in section
+    _assert_near(
+        section, "prior_rationale",
+        re.compile(r"reason\w*[^.\n]{0,80}kind|kind[^.\n]{0,80}reason\w*", re.IGNORECASE),
+        window=300,
+        msg="prior_rationale must be distinguished from the `reason` kind "
+            "enum near its own definition -- collapsing it back into the "
+            "enum must fail this",
+    )
+
+    # polarity: absent/empty changed_by -> previous cut stands;
+    # non-empty changed_by -> the new cut is accepted.
+    assert re.search(
+        r"(absent|empty)[^.\n]{0,120}changed_by[^.\n]{0,200}previous cut stand"
+        r"|changed_by[^.\n]{0,120}(absent|empty)[^.\n]{0,200}previous cut stand",
+        section, re.IGNORECASE,
+    ), "expected the absent/empty changed_by branch to resolve to 'the previous cut stands'"
+    assert re.search(
+        r"changed_by[^.\n]{0,120}non-empty[^.\n]{0,200}accept"
+        r"|non-empty[^.\n]{0,120}changed_by[^.\n]{0,200}accept",
+        section, re.IGNORECASE,
+    ), "expected the non-empty changed_by branch to resolve to accepting the new cut"
+
+    # negation guard: locatability never rejects a cut -- 'not found' /
+    # 'unverified' must only ever co-occur with 'verified'/'report' (a
+    # confidence signal), never with 'previous cut stands' (a rejection).
+    for s in re.split(r"\.\s+", section):
+        low = s.lower()
+        if "not found" in low or "unverified" in low:
+            assert "verified" in low or "report" in low, (
+                f"a locatability sentence must co-occur with verified/report: {s!r}"
+            )
+            assert "previous cut stand" not in low, (
+                f"locatability must never be a rejection condition: {s!r}"
+            )
+
+    step5 = _slice(text, "## Step 5", "## Hard rules")
+    assert "verified" in step5 and "unverified" in step5, (
+        "expected both 'verified' and 'unverified' as Step 5 report values"
+    )
+
+    # edge case: agents/bundler.md documents `changed_from_previous` and
+    # ties the naming obligation to `rationale` in the same sentence that
+    # introduces it, so the field doesn't relocate the obligation, just
+    # restate it.
+    bundler_text = _read(BUNDLER)
+    divergent_sentence = None
+    for s in re.split(r"\.\s+", bundler_text):
+        if "changed_from_previous" in s:
+            divergent_sentence = s
+            break
+    assert divergent_sentence, (
+        "expected agents/bundler.md to document `changed_from_previous`"
+    )
+    assert "rationale" in divergent_sentence.lower(), (
+        f"expected 'rationale' named in the sentence introducing "
+        f"changed_from_previous: {divergent_sentence!r}"
+    )
+    assert re.search(r"\bname\b", divergent_sentence, re.IGNORECASE), (
+        f"expected the obligation to 'name' the change stated in the same "
+        f"sentence: {divergent_sentence!r}"
+    )
+
+
+def test_gatekeeper_step_3_5_invokes_relation_readback_script():
+    text = _read(GATEKEEPER)
+    section = _slice(text, "## Step 3.5", "## Step 3.6")
+
+    assert "relation-readback.py" in section, (
+        "expected Step 3.5 to name scripts/gatekeeper/relation-readback.py"
+    )
+    assert re.search(
+        r"gap[^.\n]{0,150}\b(not|never|does not|no longer)\b[^.\n]{0,150}Planned"
+        r"|\b(not|never|does not|no longer)\b[^.\n]{0,150}Planned[^.\n]{0,150}gap",
+        section, re.IGNORECASE,
+    ), "expected a sentence binding the 'gap' verdict, a negation, and 'Planned' together"
+
+    # edge case: the new Hard rule's coexistence with the pre-existing
+    # "Blocked is not unplanned" rule, asserted once.
+    hard = text[text.index("## Hard rules"):]
+    assert "Blocked is not unplanned" in hard
+    _assert_near(
+        hard, "Blocked is not unplanned", "unexplained", window=500,
+        msg="expected the new 'unexplained relation gap withholds Planned' "
+            "Hard rule to sit near the pre-existing 'Blocked is not "
+            "unplanned' rule, naming the coexistence explicitly",
+    )
+
+
 # --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------
 
 def test_every_parsed_markdown_file_is_lf_only():
