@@ -1261,11 +1261,29 @@ def test_bundler_sequencing_clause_is_depends_on_not_collision():
         "precondition') must actually be gone, not just supplemented"
     )
 
-    # negative guard: an implementation stating the OPPOSITE rule (a
-    # sequencing statement IS a collision) must fail this test too.
-    assert not re.search(
-        r"sequenc\w+[^.]{0,120}is (a )?`?collision", section,
-    ), "found prose stating the opposite of the sequencing rule"
+    # F2 fix (test-critic round 2, major): the two checks above only prove
+    # 'never' and 'collision' co-occur somewhere in the sentence -- for an
+    # INVERSE rule ("never treat that as depends_on; record it as a
+    # collision") 'never' negates depends_on, not collision, yet both checks
+    # above still pass. And the old negative guard only matched the one
+    # literal shape "sequenc... is (a) collision", missing any other
+    # phrasing of the same inverse ("record it as a collision", "treat it as
+    # a collision", "that counts as a collision"). Broadened: split the
+    # sequencing sentence into clauses (on , / ;) and require every clause
+    # that mentions 'collision' to carry its own negation word -- this binds
+    # the negation specifically to collision, regardless of phrasing, rather
+    # than matching one fixed regex shape.
+    clauses = re.split(r"[,;]\s*", sequencing_sentence)
+    for clause in clauses:
+        if re.search(r"\bcollision\b", clause, re.IGNORECASE):
+            assert re.search(
+                r"\b(never|not|n't|isn't|doesn't|cannot|can't|won't|no longer)\b",
+                clause, re.IGNORECASE,
+            ), (
+                "expected every clause mentioning 'collision' in the "
+                f"sequencing sentence to carry its own negation, not just "
+                f"co-occur with 'never' elsewhere in the sentence: {clause!r}"
+            )
 
     # edge case: the pre-existing collision/dependency distinction paragraph
     # must survive this edit.
@@ -1284,7 +1302,18 @@ def test_bundler_ships_the_worked_cut():
     which verdict the section names -- nothing more. This is this package's
     one deliberately bare-presence test (the accepted
     test_clarifier_ships_the_two_worked_frames idiom), same as R2's own
-    "bare presence is deliberate here and only here" note."""
+    "bare presence is deliberate here and only here" note.
+
+    F1 fix (test-critic round 2, critical): "presence of which verdict the
+    section names" was stripped down too far in round 2 -- five bare
+    presence checks, none of which requires the section actually reach the
+    stated (`depends_on`) verdict rather than the opposite one (`collision` /
+    one epic). A section reproducing all three quotes and then concluding
+    "this IS a collision, bundle them as one epic" passed every assertion.
+    Restored: a sentence that names BOTH `depends_on` and the collision/epic
+    reading, with the collision/epic mention itself explicitly negated --
+    this stays within R2's stated scope (presence + which verdict is named),
+    it says nothing about HOW the bundler reaches that verdict (R1's job)."""
     text = _read(BUNDLER)
     section = _slice(text, "## Worked cuts", "## Hard rules")
 
@@ -1292,18 +1321,45 @@ def test_bundler_ships_the_worked_cut():
     assert "#14" in section
     assert "a second step after #9" in section
 
-    # which verdict it names -- presence, not polarity-binding.
+    # which verdict it names -- bound with proximity + negation so a section
+    # reaching the OPPOSITE verdict (bundle as one epic / collision) does not
+    # pass by mere co-presence of the same words.
     assert "depends_on" in section
-    assert re.search(r"\b(collision|epic)\b", section, re.IGNORECASE), (
-        "expected the section to name the collision/epic reading it discusses"
+    sentences = re.split(r"\.\s+", section)
+    verdict_sentence = next(
+        (
+            s for s in sentences
+            if "depends_on" in s and re.search(r"\b(collision|epic)\b", s, re.IGNORECASE)
+        ),
+        None,
+    )
+    assert verdict_sentence, (
+        "expected a sentence naming both the depends_on verdict and the "
+        "collision/epic reading it names -- section: " + section[:400]
+    )
+    assert re.search(
+        r"\b(not|never|instead of|rather than|no|n't)\b[^.\n]{0,80}\b(collision|epic)\b"
+        r"|\b(collision|epic)\b[^.\n]{0,80}\b(not|never|instead of|rather than|no|n't)\b",
+        verdict_sentence, re.IGNORECASE,
+    ), (
+        "expected the collision/epic reading to be explicitly negated/"
+        f"rejected in the verdict sentence, not merely mentioned: {verdict_sentence!r}"
     )
 
 
 def test_bundler_schema_requires_size_and_caps_collision():
     text = _read(BUNDLER)
-    fenced = re.search(r"```json\n(.*?)```", text, re.DOTALL)
-    assert fenced, "no fenced JSON block found in agents/bundler.md"
-    json_block = fenced.group(1)
+    # F8 fix (test-critic round 2, minor): a bare "does a ```json fence
+    # exist" check is guaranteed true independent of this package --
+    # agents/bundler.md already carries an output-format fence today. Bind
+    # the extraction to the SPECIFIC schema block that carries the
+    # "tickets" key, not just any fenced json block in the file.
+    fenced_blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    assert fenced_blocks, "no fenced JSON block found in agents/bundler.md"
+    json_block = next((b for b in fenced_blocks if '"tickets"' in b), None)
+    assert json_block, (
+        "expected a fenced JSON block containing the 'tickets' schema key"
+    )
 
     assert re.search(r'"tickets":\s*\[\s*\{[^}]*"size"', json_block), (
         "'tickets' must be an array of objects carrying 'size', not a bare "
@@ -1434,14 +1490,49 @@ def test_gatekeeper_rejects_oversized_collision_package():
         "of the rejection sentence"
     )
 
+    # F3 fix (test-critic round 2, major): bare presence of the string
+    # "depends_on" in the window is also satisfied by prose stating the
+    # entries are DROPPED (the pre-existing intra-package drop-rule makes
+    # that the likely incumbent). Bind it to an affirmative write/keep/
+    # retain statement, with a negation guard against the opposite.
+    dep_sentence = None
+    for s in re.split(r"\.\s+", window):
+        if "depends_on" in s:
+            dep_sentence = s
+            break
+    assert dep_sentence, "expected a sentence naming depends_on near the rejection"
+    low_dep = dep_sentence.lower()
+    assert re.search(r"\b(written|keep|kept|retain\w*|still)\b", low_dep), (
+        "expected the depends_on sentence to affirmatively state the "
+        f"entries are written/kept/retained: {dep_sentence!r}"
+    )
+    assert not re.search(r"\b(dropped|not written|discarded|removed)\b", low_dep), (
+        f"the depends_on sentence must not state the entries are dropped: {dep_sentence!r}"
+    )
+
     assert "epic" not in low, (
         "the rejection sentence must not mention creating an epic -- "
         f"rejected members become single packages: {reject_sentence!r}"
     )
 
     # edge case: a one-large collision package is still materialised as an
-    # epic -- the existing heading must survive untouched.
+    # epic. F6 fix (test-critic round 2, minor): the heading's bare text is
+    # satisfied regardless of what's under it, including contradicting body
+    # text. Bind the check to the heading's own body still describing the
+    # epic-materialisation behaviour, not just the heading string.
     assert "### Materialise multi-ticket packages as epics" in text
+    materialise_section = _slice(
+        text, "### Materialise multi-ticket packages as epics",
+        "## Step 3 — clarify each package",
+    )
+    assert re.search(r"\bcreate_ticket\b", materialise_section), (
+        "expected the body under 'Materialise multi-ticket packages as "
+        "epics' to still describe creating the epic ticket, not just carry "
+        "the heading"
+    )
+    assert re.search(r'labels=\["?epic"?\]|\bepic\b', materialise_section, re.IGNORECASE), (
+        "expected the epic-materialisation body to still name 'epic'"
+    )
 
 
 def test_gatekeeper_applies_recut_to_both_endpoints():
@@ -1504,8 +1595,41 @@ def test_gatekeeper_applies_recut_to_both_endpoints():
         f"the `to` variable (direction-inversion guard): {non_goal_ctx!r}"
     )
 
-    assert "no epic" in section.lower()
-    assert "object by replying" in section.lower()
+    # F7 fix (test-critic round 2, minor): "no epic" and "object by
+    # replying" were checked as bare substrings anywhere in the whole Step
+    # 3.7 slice, not bound to their specific role. Bind "no epic" to an
+    # UNCONDITIONAL statement (no conditional word governing it, so
+    # "no epic is created unless both endpoints are large" -- which
+    # reintroduces the epic -- fails), and bind "object by replying" to
+    # appearing as its own closing sentence inside EACH of the two comment
+    # blocks the step posts (frame_block and the re-cut block), consistent
+    # with how the F6/F7/F8 (round-1) fixes above already bind the labelled
+    # lines to their specific block rather than the whole section.
+    no_epic_sentence = None
+    for s in re.split(r"\.\s+", section):
+        if "no epic" in s.lower():
+            no_epic_sentence = s
+            break
+    assert no_epic_sentence, "expected a 'no epic' statement in Step 3.7"
+    assert not re.search(
+        r"\b(unless|if|except|when)\b", no_epic_sentence, re.IGNORECASE,
+    ), (
+        "'no epic' must be stated unconditionally, not gated behind a "
+        f"conditional that could re-permit an epic: {no_epic_sentence!r}"
+    )
+
+    closing_line_re = re.compile(
+        r"(^|\n|\.\s)Object by replying on this ticket\.", re.IGNORECASE,
+    )
+    recut_block = section[recut_heading_idx:]
+    assert closing_line_re.search(frame_block), (
+        "expected 'Object by replying on this ticket.' as its own closing "
+        f"sentence inside the frame-comment block: {frame_block!r}"
+    )
+    assert closing_line_re.search(recut_block), (
+        "expected 'Object by replying on this ticket.' as its own closing "
+        f"sentence inside the re-cut comment block: {recut_block!r}"
+    )
 
     # edge case: the third closing-sentence variant (recut-only trigger) is
     # present -- a fourth copy of one of Step 4's two (false, for this case)
@@ -1650,6 +1774,23 @@ def test_gatekeeper_passes_previous_cut_and_requires_named_change():
         "(word-boundary-checked, since 'unverified' contains 'verified' as "
         "a substring)"
     )
+    # F5 fix (test-critic round 2, minor): presence anywhere in Step 5 is
+    # also satisfied by the two words belonging to an unrelated report line
+    # (e.g. the relation read-back report). Bind both to the specific
+    # reporting context the plan describes -- the changed_by confidence
+    # signal -- rather than anywhere in Step 5.
+    verified_re = re.compile(r"\bverified\b")
+    unverified_re = re.compile(r"\bunverified\b")
+    _assert_near(
+        step5, verified_re, "changed_by", window=300,
+        msg="expected 'verified' bound to the changed_by confidence-signal "
+            "context in Step 5, not just present anywhere in the section",
+    )
+    _assert_near(
+        step5, unverified_re, "changed_by", window=300,
+        msg="expected 'unverified' bound to the changed_by confidence-signal "
+            "context in Step 5, not just present anywhere in the section",
+    )
 
     # edge case: agents/bundler.md documents `changed_from_previous` and
     # ties the naming obligation to `rationale` in the same sentence that
@@ -1680,6 +1821,31 @@ def test_gatekeeper_step_3_5_invokes_relation_readback_script():
 
     assert "relation-readback.py" in section, (
         "expected Step 3.5 to name scripts/gatekeeper/relation-readback.py"
+    )
+    # F4 fix (test-critic round 2, critical): a bare literal-presence check
+    # on the path string is satisfied by a passing mention with no actual
+    # invocation -- e.g. "(a helper, scripts/gatekeeper/relation-readback.py,
+    # exists for this diff)" while the read-back stays LLM prose bookkeeping.
+    # Require the section to actually show the invocation contract: piped
+    # stdin, the interpreter, and the verdict/exit-code vocabulary the plan
+    # specifies (`{expected, relations, reasons}` piped in; `verdict: ok|gap`,
+    # exit 0/2) -- not just the filename mentioned.
+    _assert_near(
+        section, "relation-readback.py", "stdin", window=300,
+        msg="expected the script invocation to be described with a piped "
+            "stdin input near the script name, not just the name mentioned",
+    )
+    assert re.search(r"\bpython3?\b", section), (
+        "expected Step 3.5 to name the interpreter (python/python3) "
+        "invoking the script"
+    )
+    assert re.search(r"verdict:\s*ok\s*\|\s*gap", section, re.IGNORECASE), (
+        "expected Step 3.5 to state the script's 'verdict: ok|gap' contract"
+    )
+    assert re.search(r"exit\s*0", section, re.IGNORECASE) and re.search(
+        r"exit\s*2", section, re.IGNORECASE,
+    ), (
+        "expected Step 3.5 to name the script's exit codes (0 / 2)"
     )
     # F11 fix (test-critic round 1): "gap" + a negation + "Planned" anywhere
     # in one sentence matches both the gate ("does not move to Planned")
