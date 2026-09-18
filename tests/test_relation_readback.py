@@ -240,6 +240,39 @@ def test_relation_readback_target_mismatch_with_equal_counts_is_a_gap():
     assert result.returncode == 2, result.stderr
 
 
+def test_relation_readback_wrong_kind_at_right_target_is_still_a_gap():
+    """R1 fix (review round 1): the kind filter (`blocked_by`/`relates_to`
+    only) had no test exercising the rejection path -- every case above
+    either omits the target entirely or writes it with a satisfying kind.
+    Here the relation IS present at the exact expected target, but as
+    `kind: "parent"` -- a hierarchy relation, not the dependency edge Step
+    3.5 writes. A script that matched on `target` alone (ignoring `kind`)
+    would wrongly report `ok` here and silently reopen the incident this
+    package fixes; the script must still report `gap` for that target."""
+    result = run_readback({
+        "expected": ["#5"],
+        "relations": [
+            {"kind": "parent", "target": "#5"},
+        ],
+        "reasons": {},
+    })
+    assert "verdict: gap" in result.stdout, (
+        "a relation of the wrong kind ('parent') at the exact expected "
+        "target must not satisfy it -- the kind filter must reject it, "
+        f"not match on target alone: stdout={result.stdout!r} "
+        f"stderr={result.stderr!r}"
+    )
+    gap_line = next(
+        (line for line in result.stdout.splitlines() if line.startswith("gap targets:")),
+        None,
+    )
+    assert gap_line, f"expected a 'gap targets:' line in stdout, got stdout={result.stdout!r}"
+    assert "#5" in gap_line, (
+        f"expected the wrong-kind target (#5) named in the gap targets line: {gap_line!r}"
+    )
+    assert result.returncode == 2, result.stderr
+
+
 def test_relation_readback_duplicate_relation_is_not_a_gap():
     result = run_readback({
         "expected": ["#5"],
