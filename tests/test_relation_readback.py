@@ -138,6 +138,35 @@ def test_relation_readback_accepts_gitlab_relates_to():
     assert result.returncode == 0, result.stderr
 
 
+def test_relation_readback_target_mismatch_with_equal_counts_is_a_gap():
+    """F12 fix (test-critic round 1): every prior case here only ever
+    differs in list LENGTH between expected and returned relations, never in
+    actual membership/identity -- a script comparing only counts (e.g.
+    len(relations) + len(reasons) >= len(expected)) passes all of them
+    without ever diffing which targets were actually written. Here the
+    counts agree (2 expected, 2 relations) but the target set does not:
+    #9 was never written, and #3 is a spurious relation with no bearing on
+    the expected set. Only a real membership diff reports this as a gap."""
+    result = run_readback({
+        "expected": ["#5", "#9"],
+        "relations": [
+            {"kind": "blocked_by", "target": "#5"},
+            {"kind": "blocked_by", "target": "#3"},
+        ],
+        "reasons": {},
+    })
+    assert "verdict: gap" in result.stdout, (
+        f"expected 'verdict: gap' in stdout (counts match, 2 vs 2, but #9 "
+        f"is missing while #3 is an unrelated extra), got "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "#9" in result.stdout, (
+        "expected the missing target id (#9) named in stdout even though "
+        f"relation counts matched the expected count, got stdout={result.stdout!r}"
+    )
+    assert result.returncode == 2, result.stderr
+
+
 def test_relation_readback_duplicate_relation_is_not_a_gap():
     result = run_readback({
         "expected": ["#5"],
