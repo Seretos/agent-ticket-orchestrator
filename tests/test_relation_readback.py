@@ -104,6 +104,54 @@ def test_relation_readback_missing_target_with_named_reason_is_ok():
         assert result.returncode == 0, (reason, result.stderr)
 
 
+def test_relation_readback_each_missing_target_needs_its_own_reason():
+    """F8 fix (test-critic round 4, minor): every case above keys a single
+    `reasons` entry to the one target that's actually missing, so a script
+    that only checks "is `reasons` non-empty and are its values
+    vocabulary-valid" -- ignoring which key they are attached to -- would
+    pass every one of them. Two missing targets here (#9 and #12): first,
+    each carries its OWN, DIFFERENT valid reason -- both resolve (ok).
+    Second, the same reasons dict is narrowed so only #9 keeps its own
+    entry; #12 must still report as a gap even though `reasons` stays
+    non-empty and vocabulary-valid, because that entry is not #12's own."""
+    # both missing targets carry their own, distinct reason -> resolved.
+    result_ok = run_readback({
+        "expected": ["#5", "#9", "#12"],
+        "relations": [
+            {"kind": "blocked_by", "target": "#5"},
+        ],
+        "reasons": {"#9": "not found", "#12": "closed"},
+    })
+    assert "verdict: ok" in result_ok.stdout, (
+        f"expected 'verdict: ok' when each missing target (#9, #12) "
+        f"carries its own reason: stdout={result_ok.stdout!r} "
+        f"stderr={result_ok.stderr!r}"
+    )
+    assert result_ok.returncode == 0, result_ok.stderr
+
+    # same two missing targets, but only #9 carries a reason of its own --
+    # #12 must still gap, even though `reasons` stays non-empty and its
+    # one value ('not found') is vocabulary-valid.
+    result_gap = run_readback({
+        "expected": ["#5", "#9", "#12"],
+        "relations": [
+            {"kind": "blocked_by", "target": "#5"},
+        ],
+        "reasons": {"#9": "not found"},
+    })
+    assert "verdict: gap" in result_gap.stdout, (
+        "expected 'verdict: gap' -- #12 is missing and carries no reason "
+        "of its own, even though the reasons dict is non-empty and "
+        f"vocabulary-valid: stdout={result_gap.stdout!r} "
+        f"stderr={result_gap.stderr!r}"
+    )
+    assert "#12" in result_gap.stdout, (
+        "expected the unreasoned missing target (#12) named in stdout as "
+        f"the gap: stdout={result_gap.stdout!r}"
+    )
+    assert result_gap.returncode == 2, result_gap.stderr
+
+
 def test_relation_readback_rejects_a_fourth_reason_value():
     result = run_readback({
         "expected": ["#5", "#9"],
