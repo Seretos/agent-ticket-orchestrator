@@ -1358,13 +1358,30 @@ def test_bundler_ships_the_worked_cut():
         "expected a sentence naming both the depends_on verdict and the "
         "collision/epic reading it names -- section: " + section[:400]
     )
-    assert re.search(
-        r"\b(not|never|instead of|rather than|no|n't)\b[^.\n]{0,80}\b(collision|epic)\b"
-        r"|\b(collision|epic)\b[^.\n]{0,80}\b(not|never|instead of|rather than|no|n't)\b",
-        verdict_sentence, re.IGNORECASE,
-    ), (
-        "expected the collision/epic reading to be explicitly negated/"
-        f"rejected in the verdict sentence, not merely mentioned: {verdict_sentence!r}"
+
+    # F1 fix (test-critic round 4, major): a negation anywhere within 80
+    # chars of collision/epic is also satisfied by a sentence stating the
+    # OPPOSITE verdict, e.g. "The pair is not two singles with
+    # `depends_on`; it is a `collision`, bundled as one epic." -- there the
+    # negation attaches to depends_on, not to collision/epic, yet the old
+    # regex still matched. Anchor per-clause instead: split the verdict
+    # sentence on its own punctuation and require the depends_on clause to
+    # carry NO negation of its own, while the collision/epic clause DOES.
+    clauses = re.split(r"[,;:]\s*", verdict_sentence)
+    depends_clause = next((c for c in clauses if "depends_on" in c), None)
+    collision_clause = next(
+        (c for c in clauses if re.search(r"\b(collision|epic)\b", c, re.IGNORECASE)), None,
+    )
+    assert depends_clause and collision_clause, (
+        "expected depends_on and collision/epic to sit in distinguishable "
+        f"clauses of the verdict sentence: {verdict_sentence!r}"
+    )
+    negation_re = re.compile(r"\b(not|never|instead of|rather than|no|n't)\b", re.IGNORECASE)
+    assert not negation_re.search(depends_clause), (
+        f"the depends_on clause must not itself be negated: {depends_clause!r}"
+    )
+    assert negation_re.search(collision_clause), (
+        f"expected the collision/epic clause to carry its own negation: {collision_clause!r}"
     )
 
 
@@ -1400,6 +1417,15 @@ def test_bundler_schema_requires_size_and_caps_collision():
     assert cap_sentence, (
         "expected a sentence naming 'collision', 'at most one', and 'large' "
         "together -- the cap rule"
+    )
+
+    # F2 fix (test-critic round 4, major): token co-occurrence alone is also
+    # satisfied by a sentence that cancels its own cap in the same breath,
+    # e.g. "at most one large ticket unless the overlap is worth the cost".
+    # Guard against a conditional/exception word inside the cap sentence
+    # itself.
+    assert not re.search(r"\bunless\b|\bexcept\b", cap_sentence.group(0), re.IGNORECASE), (
+        f"the cap sentence must not be conditioned away: {cap_sentence.group(0)!r}"
     )
 
     # polarity guard: the cap is on `collision` only -- a sentence stating
@@ -1501,10 +1527,30 @@ def test_bundler_owes_a_recut_for_two_large_overlapping_tickets():
         "expected a sentence stating that the non-overlapping rejected pair "
         "emits no recut"
     )
-    assert re.search(
-        r"\bno\b[^.\n]{0,40}\brecut\b|\brecut\b[^.\n]{0,40}\bno\b",
-        non_overlap_sentence, re.IGNORECASE,
-    ), f"expected 'no recut' bound in: {non_overlap_sentence!r}"
+
+    # F3 fix (test-critic round 4, major): the old check let the 'no' from
+    # 'no overlap' (which is what selected this sentence in the first
+    # place) double as the negation for 'recut' too, so "Even with no
+    # overlap, a recut is still owed for a rejected large pair." passed --
+    # the exact inverse of what this assertion exists to catch. Require the
+    # negation to sit in the SAME clause as 'recut', and forbid that clause
+    # from reusing the word 'overlap' to supply it.
+    recut_clauses = [
+        c for c in re.split(r"[,;]\s*", non_overlap_sentence)
+        if re.search(r"\brecut\b", c, re.IGNORECASE)
+    ]
+    assert recut_clauses, (
+        f"expected a clause containing 'recut' in the non-overlap sentence: {non_overlap_sentence!r}"
+    )
+    for clause in recut_clauses:
+        low_c = clause.lower()
+        assert "overlap" not in low_c, (
+            "the recut clause must not reuse 'overlap' to supply its own "
+            f"negation: {clause!r}"
+        )
+        assert re.search(r"\b(no|not|never|none)\b", low_c), (
+            f"expected the recut clause itself to carry its own negation: {clause!r}"
+        )
 
 
 def test_gatekeeper_rejects_oversized_collision_package():
@@ -1788,6 +1834,26 @@ def test_gatekeeper_recut_frame_comment_is_not_clear_only():
         f"clarifier statuses CLEAR and NEEDS_INPUT: {both_sentence!r}"
     )
 
+    # F10 fix (test-critic round 4, minor): 'both'/CLEAR/NEEDS_INPUT
+    # co-occurring in one sentence is also satisfied by a COMPARATIVE
+    # sentence describing another step's scope, e.g. "Unlike Step 3.6,
+    # which runs on both CLEAR and NEEDS_INPUT, this step runs after a
+    # CLEAR verdict." -- 'both' there describes Step 3.6, not Step 3.7
+    # itself, while still scoping Step 3.7 to CLEAR-only elsewhere in the
+    # same paragraph. Reject a comparative opening and a same-paragraph
+    # restriction of THIS step to running after/only-on CLEAR.
+    assert not re.search(r"\bunlike\b|\bin contrast\b", both_sentence, re.IGNORECASE), (
+        "the both-statuses sentence must describe Step 3.7's own scope "
+        f"directly, not compare against another step's scope: {both_sentence!r}"
+    )
+    assert not re.search(
+        r"\bafter a CLEAR\b|\bonly after CLEAR\b|\brequires? a CLEAR\b",
+        first_para, re.IGNORECASE,
+    ), (
+        "Step 3.7's opening paragraph must not restrict this step itself "
+        f"to running after/only-on a CLEAR verdict: {first_para!r}"
+    )
+
     step4 = _slice(text, "## Step 4", "## Step 5")
     deferral_sentence = None
     for s in re.split(r"\.\s+", step4):
@@ -1838,16 +1904,63 @@ def test_gatekeeper_passes_previous_cut_and_requires_named_change():
 
     # polarity: absent/empty changed_by -> previous cut stands;
     # non-empty changed_by -> the new cut is accepted.
-    assert re.search(
-        r"(absent|empty)[^.\n]{0,120}changed_by[^.\n]{0,200}previous cut stand"
-        r"|changed_by[^.\n]{0,120}(absent|empty)[^.\n]{0,200}previous cut stand",
-        section, re.IGNORECASE,
-    ), "expected the absent/empty changed_by branch to resolve to 'the previous cut stands'"
-    assert re.search(
-        r"changed_by[^.\n]{0,120}non-empty[^.\n]{0,200}accept"
-        r"|non-empty[^.\n]{0,120}changed_by[^.\n]{0,200}accept",
-        section, re.IGNORECASE,
-    ), "expected the non-empty changed_by branch to resolve to accepting the new cut"
+    #
+    # F6 fix (test-critic round 4, major): the old regexes only checked
+    # token order, which a DOUBLE negation also satisfies -- "the previous
+    # cut no longer stands" still contains "...previous cut..." followed
+    # eventually by "stand", and "does not by itself accept" still contains
+    # "...accept" downstream of "changed_by"/"non-empty". Anchor each
+    # branch to its own sentence, then forbid a negation word from sitting
+    # directly in front of the outcome phrase (stand/accept) within that
+    # sentence -- that is where a double negation would have to attach.
+    sentences = re.split(r"\.\s+", section)
+    absent_sentence = next(
+        (
+            s for s in sentences
+            if re.search(r"\b(absent|empty)\b", s, re.IGNORECASE) and "changed_by" in s
+        ),
+        None,
+    )
+    assert absent_sentence, "expected a sentence describing the absent/empty changed_by branch"
+    assert re.search(r"previous cut stand", absent_sentence, re.IGNORECASE), (
+        "expected the absent/empty changed_by branch to resolve to 'the "
+        f"previous cut stands': {absent_sentence!r}"
+    )
+    # Scope the negation check to the CLAUSE that actually carries "previous
+    # cut stand" (split on ,;:), not a fixed character window -- a fixed
+    # window is either too narrow to catch "no longer stands" or, as here,
+    # wide enough to snag an unrelated negation word ("never arrived") from
+    # the PRECEDING clause that has nothing to do with whether the cut
+    # stands.
+    stand_match = re.search(r"previous cut stand", absent_sentence, re.IGNORECASE)
+    clause_start = max(
+        (absent_sentence.rfind(c, 0, stand_match.start()) + 1 for c in ",;:"),
+        default=0,
+    )
+    pre_stand_ctx = absent_sentence[clause_start: stand_match.start()]
+    assert not re.search(
+        r"\b(no longer|not|never|doesn't|isn't|won't)\b", pre_stand_ctx, re.IGNORECASE,
+    ), (
+        "the absent/empty changed_by branch's 'previous cut stands' must "
+        f"not itself be negated (e.g. 'no longer stands'): {absent_sentence!r}"
+    )
+
+    nonempty_sentence = next(
+        (s for s in sentences if "non-empty" in s.lower() and "changed_by" in s), None,
+    )
+    assert nonempty_sentence, "expected a sentence describing the non-empty changed_by branch"
+    accept_match = re.search(r"\baccept", nonempty_sentence, re.IGNORECASE)
+    assert accept_match, (
+        "expected the non-empty changed_by branch to resolve to accepting "
+        f"the new cut: {nonempty_sentence!r}"
+    )
+    pre_accept_ctx = nonempty_sentence[max(0, accept_match.start() - 30): accept_match.start()]
+    assert not re.search(
+        r"\b(not|never|doesn't|does not|n't)\b", pre_accept_ctx, re.IGNORECASE,
+    ), (
+        "the non-empty changed_by branch's acceptance must not itself be "
+        f"negated (e.g. 'does not ... accept'): {nonempty_sentence!r}"
+    )
 
     # negation guard: locatability never rejects a cut -- 'not found' /
     # 'unverified' must only ever co-occur with 'verified'/'report' (a
@@ -1967,17 +2080,40 @@ def test_gatekeeper_step_3_5_invokes_relation_readback_script():
     # specifically to "move ... Planned", per the plan's own wording ("does
     # not move to Planned"), and reject the inverted "withhold" phrasing
     # outright.
-    assert re.search(
-        r"gap[^.\n]{0,150}\b(not|never|does not|no longer)\b[^.\n]{0,60}\bmove\w*\b[^.\n]{0,60}\bPlanned\b"
-        r"|\b(not|never|does not|no longer)\b[^.\n]{0,60}\bmove\w*\b[^.\n]{0,60}\bPlanned\b[^.\n]{0,150}gap",
-        section, re.IGNORECASE,
-    ), "expected a sentence binding the 'gap' verdict, a negation of 'move', and 'Planned' together"
+    # F7 fix (test-critic round 4, major): the old check accepted a negation
+    # ANYWHERE within 60 chars before "move ... Planned", including a
+    # DOUBLE negation like "does not prevent the package from moving to
+    # Planned" -- which states the opposite gate (the gap does NOT block
+    # Planned) while still matching. The companion guard also fired as a
+    # false positive on this file's own pre-existing, unrelated "Being
+    # blocked never withholds a package from Planned" sentence (about
+    # `blocked_by`, not about a relation-write `gap`), since it scanned the
+    # whole section rather than the gap sentence specifically. Fixed by
+    # anchoring everything to the ONE sentence that actually mentions
+    # 'gap', 'move' and 'Planned' together, then forbidding a negation word
+    # from sitting directly in front of prevent/stop/block/withhold within
+    # that sentence (where a double negation would have to attach).
+    gate_sentence = next(
+        (
+            s for s in re.split(r"\.\s+", section)
+            if "gap" in s.lower() and re.search(r"\bmove\w*\b", s, re.IGNORECASE)
+            and "planned" in s.lower()
+        ),
+        None,
+    )
+    assert gate_sentence, (
+        "expected a sentence binding the 'gap' verdict, 'move', and "
+        "'Planned' together"
+    )
+    assert re.search(r"\b(not|never|does not|no longer)\b", gate_sentence, re.IGNORECASE), (
+        f"expected the gap/move/Planned sentence to carry a negation: {gate_sentence!r}"
+    )
     assert not re.search(
-        r"\b(not|never|does not|no longer)\b[^.\n]{0,60}\bwithhold\w*\b[^.\n]{0,60}\bPlanned\b",
-        section, re.IGNORECASE,
+        r"\b(not|never|does not|no longer)\b[^.\n]{0,30}\b(prevent\w*|stop\w*|block\w*|withhold\w*)\b",
+        gate_sentence, re.IGNORECASE,
     ), (
-        "found the inverted phrasing 'does not withhold ... Planned', "
-        "which states the opposite of the gate (the gap NOT blocking Planned)"
+        "found a double-negation phrasing (negation modifying prevent/stop/"
+        f"block/withhold rather than move/Planned directly): {gate_sentence!r}"
     )
 
     # edge case: the new Hard rule's coexistence with the pre-existing

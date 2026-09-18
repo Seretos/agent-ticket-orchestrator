@@ -81,9 +81,25 @@ def test_relation_readback_missing_target_with_no_reason_is_a_gap():
         f"expected 'verdict: gap' in stdout, got stdout={result.stdout!r} "
         f"stderr={result.stderr!r}"
     )
-    assert "#9" in result.stdout, (
-        "expected the missing target id named in stdout, "
-        f"got stdout={result.stdout!r}"
+    # F9 fix (test-critic round 4, minor): bare "is the missing id present
+    # in stdout somewhere" is also satisfied by a script that unconditionally
+    # echoes the whole `expected` list on a gap -- #9 would be named, but so
+    # would the resolved #5, without the script ever distinguishing them.
+    # Bind the check to a dedicated 'gap targets:' line and require the
+    # resolved target to be absent from it.
+    gap_line = next(
+        (line for line in result.stdout.splitlines() if line.startswith("gap targets:")),
+        None,
+    )
+    assert gap_line, (
+        f"expected a 'gap targets:' line in stdout, got stdout={result.stdout!r}"
+    )
+    assert "#9" in gap_line, (
+        f"expected the missing target id in the gap targets line: {gap_line!r}"
+    )
+    assert "#5" not in gap_line, (
+        "the resolved target #5 must not appear in the gap targets line "
+        f"(would mean the script echoes the whole expected set): {gap_line!r}"
     )
     assert result.returncode == 2, result.stderr
 
@@ -208,9 +224,18 @@ def test_relation_readback_target_mismatch_with_equal_counts_is_a_gap():
         f"is missing while #3 is an unrelated extra), got "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert "#9" in result.stdout, (
-        "expected the missing target id (#9) named in stdout even though "
-        f"relation counts matched the expected count, got stdout={result.stdout!r}"
+    gap_line = next(
+        (line for line in result.stdout.splitlines() if line.startswith("gap targets:")),
+        None,
+    )
+    assert gap_line, f"expected a 'gap targets:' line in stdout, got stdout={result.stdout!r}"
+    assert "#9" in gap_line, (
+        "expected the missing target id (#9) named in the gap targets line "
+        f"even though relation counts matched the expected count: {gap_line!r}"
+    )
+    assert "#5" not in gap_line and "#3" not in gap_line, (
+        "neither the resolved target #5 nor the unrelated extra relation #3 "
+        f"belongs in the gap targets line: {gap_line!r}"
     )
     assert result.returncode == 2, result.stderr
 

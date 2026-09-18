@@ -100,6 +100,10 @@ Question cards" and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
 
+**Reconstruct `previous_cut` for a candidate returning from Question.** `list_hierarchy` for `package`; `get_ticket(project_id, ticket_id, include_relations=True)` for `depends_on`; the latest `## Frame (gatekeeper)` / `## Dependency (gatekeeper)` / `## Re-cut (gatekeeper)` comment (`list_comments(order="desc")`) for `reason` (the prior package kind: `collision`/`effort`/`single`) and `prior_rationale`.
+`prior_rationale` carries the prior pass's actual reasoning, distinct from the reason kind above — not just the kind — with `source` naming which comment it came from.
+`reason: "unknown"` and empty `prior_rationale` when nothing is recoverable. A first-generation candidate (never through Question before) gets no `previous_cut` at all.
+
 Dispatch the `bundler` **once**, unnamed, synchronous, fresh:
 
 ```
@@ -108,6 +112,8 @@ Agent(
   description="bundle Backlog of <project_id>",
   prompt="project_id=<project_id> local_path=<local_path>\n
           Candidates (id · title · labels):\n<the full list>\n
+          previous_cut (for returning candidates only): <the reconstructed
+          object per candidate, omitted for a first-generation ticket>\n
           Return the packages JSON block."
 )
 ```
@@ -117,10 +123,20 @@ It returns a JSON block:
 ```json
 { "packages": [
   { "title": "...", "reason": "collision" | "effort" | "single",
-    "tickets": [<ids>], "rationale": "...",
-    "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ] }
+    "tickets": [{ "id": <id>, "size": "small" | "medium" | "large" }, ...],
+    "rationale": "...",
+    "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ],
+    "recut": [ { "from": <id>, "to": <id>, "slice": "...", "why": "..." } ],
+    "changed_from_previous": { "ticket": <id>, "was": "...", "now": "...",
+                                "changed_by": "..." } }
 ] }
 ```
+
+**A changed verdict is accepted when it is named, not when it is locatable.** For a candidate carrying `previous_cut`, compare this pass's package/`reason` against it.
+Absent or empty `changed_by` in `changed_from_previous` means the named change never arrived: the previous cut stands, and this pass keeps the prior package/`reason` for that ticket instead of the bundler's new one.
+A non-empty `changed_by` accepts the new cut outright.
+Then *try* to locate the named answer/change in `list_comments` or the ticket body, and record the outcome in Step 5 as a confidence signal only: verified when found, unverified: not found in comments/body when not.
+Locatability never rejects a cut — an answer can arrive outside a ticket comment, or be paraphrased; only an absent or empty `changed_by` keeps the previous cut standing.
 
 **Apply the proposal directly — no confirmation round.** Every candidate the
 bundler placed in a package is materialised as that package (see
@@ -169,6 +185,13 @@ For each accepted package with **two or more** tickets:
    the PR when the epic is done.
 
 A **single-ticket** package is the ticket itself — no epic, nothing created.
+
+### An oversized collision package is split, not materialised
+
+When a `collision` package carries two or more `size: large` tickets, the gatekeeper rejects it into `single` packages, one package per ticket.
+No epic is materialised for it.
+Each member's `depends_on` entries, including the kept large↔large edge, are written per member through the ordinary Step 3.5 path.
+Report it in Step 5 as `collision package rejected (2 large tickets): #a, #b are now single`.
 
 From here on, *package ticket* means the epic, or the single ticket.
 
@@ -321,7 +344,19 @@ for each raw target #t:
   5. Idempotency. Skip a relation the package already carries (from this
      step's own get_ticket, or an earlier pass's). A second identical
      relation is harmless; a second identical comment is not.
+  6. Read back and verify. Build `expected` (every target `deps` resolved
+     to, after lifting), `relations` (a fresh `get_ticket(project_id,
+     <this package>, include_relations=True)`, `{kind, target}` per entry —
+     matched against `expected` only when `kind` is `blocked_by` or
+     `relates_to`; any other kind, even at the same target, does not
+     satisfy an expected dependency) and `reasons` (the `not found` /
+     `closed` / `self-edge` reason recorded per target in steps 2-3 above,
+     keyed by target).
 ```
+
+Pipe `{"expected": [...], "relations": [...], "reasons": {...}}` as JSON on **stdin** to `scripts/gatekeeper/relation-readback.py` (`python`, or `python3` if `python` is not on PATH), and read its `verdict: ok|gap` line from stdout — `exit 0` on `ok`, `exit 2` on `gap` (naming the missing target(s)).
+A `gap` verdict: re-write the missing relation once (step 4 above) and re-run the read-back; still `gap` → record it as an **unexplained gap** in Step 5's report.
+A `gap` verdict does not move the package to Planned (Step 4); it stays in its current column until the next pass's write succeeds, and Step 5 records the unexplained gap.
 
 **Being blocked never withholds a package from Planned.** A package whose
 questions are settled moves to Planned in Step 4 exactly as it would without
@@ -394,11 +429,64 @@ label and post a comment — exactly the same shape as
 `## Clarification needed (gatekeeper)`, which is already how this skill turns
 the clarifier's read-only output into board state.
 
+## Step 3.7 — apply a recut
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it.
+
+For each `recut` entry, on **both** endpoints, in this order:
+
+1. Post a `## Frame (gatekeeper)` comment — the same body Step 4 defines, rendered from the frame block Step 3 already parsed for that package:
+
+```
+add_comment(project_id, ticket_id=<endpoint>, body=…)
+```
+
+```
+## Frame (gatekeeper)
+
+Symptom: <frame symptom>
+Acceptance criterion: <frame ac>
+Premises to verify before planning: <p1>; <p2>; … — omit when `premise` is `none`
+
+<the labelled re-cut line for this endpoint — see below>
+
+<closing sentence — pick by trigger, never more than one>
+
+Object by replying on this ticket.
+```
+
+On the **target** (`to`) endpoint, this line renders:
+
+Additional requirement (re-cut from #<from>): <slice>
+
+The closing sentence: when neither `ac:` nor `premise:` fired for this package, use the third variant, verbatim — "The ticket's own acceptance criterion is unchanged; the re-cut line above is part of this package's frame." Otherwise Step 4's two existing variants apply unchanged, chosen the same way Step 4 chooses them.
+
+On the **source** (`from`) endpoint, this line renders:
+
+Non-goal (re-cut to #<to>): <slice>
+
+2. Post a `## Re-cut (gatekeeper)` comment:
+
+```
+add_comment(project_id, ticket_id=<endpoint>, body=…)
+```
+
+```
+## Re-cut (gatekeeper)
+
+From: #<from>
+To: #<to>
+Slice: <slice>
+Why: <why>
+
+Object by replying on this ticket.
+```
+
+No epic is created for a `recut` pair, on either endpoint, and neither endpoint waits for a reply.
+
 ## Step 4 — release to Planned
 
-On CLEAR, first the frame comment. Post the frame comment when `ac:` is anything other than `as-filed` — either for that reason, or because
-`premise:` is not `none` — unless Step 3.6 already posted a `## Regression
-chain (gatekeeper)` comment carrying the same content:
+On CLEAR, first the frame comment.
+Post the frame comment when `ac:` is anything other than `as-filed` — either for that reason, or because `premise:` is not `none` — unless Step 3.6 already posted a `## Regression chain (gatekeeper)` comment carrying the same content, or Step 3.7 already posted a `## Frame (gatekeeper)` comment for this same endpoint this pass: skip Step 4's post in either case, so no endpoint ever carries two frame comments.
 
 ```
 add_comment(project_id, ticket_id=<package>, body=…)
@@ -457,7 +545,16 @@ Also report, each named where it is produced: `regression-chain: #a → #b →
 this` for every chained package; `Planned but blocked: #<pkg> waits on #<b>,
 which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
-closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3).
+closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
+`collision package rejected (2 large tickets): #a, #b are now single` (Step
+2); `recut applied: #<from> → #<to>` (Step 3.7); `unexplained relation gap:
+#<pkg> — #<ids>` for a package withheld from Planned (Step 3.5).
+
+For a returning candidate whose verdict changed from `previous_cut`, report
+the `changed_by` confidence signal — `changed_from_previous: #<id> —
+changed_by named, verified` when the named change was located, or
+`changed_from_previous: #<id> — changed_by named, unverified: not found in
+comments/body` when it was not (Step 2).
 
 Flag any package at 4+ `## Clarification needed (gatekeeper)` comments as
 unusually hard to clarify (see Step 3). Then one line: "Move the packages you
@@ -490,6 +587,7 @@ are all in the Question column — then run
 - **Bundle before clarify**, always.
 - **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
   package out of Planned (Step 3.5).
+- **An unexplained relation gap withholds Planned.** Unlike `blocked_by`, a relation write that `scripts/gatekeeper/relation-readback.py` cannot verify keeps the package out of Planned until the write succeeds (Step 3.5).
 - **Never write a dependency relation from the child side.** It is written on
   the package ticket, on both ends, lifted through the Step 2 package map and
   `list_hierarchy` (Step 3.5).
