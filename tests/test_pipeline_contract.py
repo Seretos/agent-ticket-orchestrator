@@ -507,50 +507,86 @@ def test_gatekeeper_posts_the_frame_comment_when_the_ac_was_rewritten():
 RELEASED_HEADING = "## Released (gatekeeper)"
 
 
+def _release_comment_call(step4: str):
+    """The add_comment( call in Step 4 that carries RELEASED_HEADING: the
+    heading sits inside the call's own parentheses, or in the fenced body
+    block directly after it (the same call-then-body shape the frame comment
+    uses; only whitespace/backticks may sit between). Returns (start,
+    call_text, body) or None; a free-standing note elsewhere never matches."""
+    heading = step4.find(RELEASED_HEADING)
+    if heading < 0:
+        return None
+    for start, call in _call_spans(step4, "add_comment"):
+        end = start + len(call)
+        if start <= heading < end:
+            body = step4[heading:end]
+        elif end <= heading and re.fullmatch(r"[\s`]*", step4[end:heading]):
+            close = step4.find("\n```", heading)
+            body = step4[heading:close if close >= 0 else heading + 900]
+        else:
+            continue
+        return start, call, body
+    return None
+
+
 def test_gatekeeper_confirms_a_cleared_package_on_the_ticket():
     """#28: on CLEAR the gatekeeper leaves a ticket-level trace of the
-    clearance, not only a column move. The heading, what was checked, that no
-    open questions were found and the target column must sit together in
-    Step 4, right after an add_comment call."""
+    clearance, not only a column move. The heading must belong to a Step 4
+    add_comment( call, and its body names what was checked, that no open
+    questions were found and the target column."""
     step4 = _slice(_read(GATEKEEPER), "## Step 4", "## Step 5")
-    assert RELEASED_HEADING in step4, f"{RELEASED_HEADING!r} not found in Step 4"
-    pos = step4.index(RELEASED_HEADING)
-    assert "add_comment(" in step4[max(0, pos - 400):pos], (
-        "the release comment heading is not introduced by an add_comment( call"
+    found = _release_comment_call(step4)
+    assert found, (
+        f"no add_comment( call in Step 4 carries {RELEASED_HEADING!r} "
+        "(inside the call or in the body block directly after it)"
     )
-    block = step4[pos:pos + 900]
-    assert re.search(r"no open questions", block, re.IGNORECASE)
-    assert "Checked" in block
-    assert re.search(r"Moved:.*Planned", block)
+    _, _, body = found
+    assert re.search(r"no open questions", body, re.IGNORECASE)
+    assert "Checked" in body
+    assert re.search(r"Moved:.*Planned", body)
 
 
 def test_gatekeeper_release_comment_follows_the_planned_move():
-    """The comment asserts the move happened, so it is posted after the
-    Planned update_ticket; and Step 1's ownership test must not mention it."""
+    """The comment asserts the move happened, so the add_comment( call that
+    carries the release heading comes after the Planned update_ticket; and
+    Step 1's ownership test gains no release-comment clause at all."""
     text = _read(GATEKEEPER)
     step4 = _slice(text, "## Step 4", "## Step 5")
-    assert RELEASED_HEADING in step4, f"{RELEASED_HEADING!r} not found in Step 4"
+    found = _release_comment_call(step4)
+    assert found, f"no add_comment( call in Step 4 carries {RELEASED_HEADING!r}"
+    call_pos = found[0]
     move = [p for p, c in _call_spans(step4, "update_ticket")
             if "native of Planned" in c]
     assert move, "Planned update_ticket not found in Step 4"
-    heading = step4.index(RELEASED_HEADING)
-    assert move[0] < heading, "release comment must come after the Planned move"
-    assert any(p > move[0] for p, _ in _call_spans(step4, "add_comment")), (
-        "no add_comment( call after the Planned move"
+    assert move[0] < call_pos, (
+        "the release-heading add_comment( call must come after the Planned "
+        "update_ticket( call"
     )
     step1 = _slice(text, "## Step 1", "## Step 2")
     assert "adev:event" in step1 and "newer" in step1
-    assert RELEASED_HEADING not in step1
+    assert not re.search(r"releas\w*[^.]{0,80}(comment|confirmation)|"
+                         r"(comment|confirmation)[^.]{0,80}releas",
+                         step1, re.IGNORECASE), (
+        "Step 1 must carry no release-comment clause"
+    )
 
 
 def test_gatekeeper_release_comment_is_named_in_the_write_list():
     hard = _read(GATEKEEPER)
     hard = hard[hard.index("## Hard rules"):]
     rule = _slice(hard, "- **Never edit code", "- **Never close")
-    assert re.search(r"release[- ]confirmation", rule, re.IGNORECASE)
+    writes = _slice(rule, "Your writes are", "moves")
+    assert re.search(r"release[- ]confirmation", writes, re.IGNORECASE), (
+        "Hard-rules write enumeration does not name release-confirmation comments"
+    )
+    assert "frame comments" in writes
     agents = _read(AGENTS_MD)
     row = next(l for l in agents.splitlines() if l.startswith("| `gatekeeper` |"))
-    assert re.search(r"release[- ]confirmation", row, re.IGNORECASE)
+    writes_cell = row.rstrip().rstrip("|").split("|")[-1]
+    assert "frame" in writes_cell
+    assert re.search(r"release[- ]confirmation", writes_cell, re.IGNORECASE), (
+        "AGENTS.md gatekeeper row's writes cell does not name release-confirmation comments"
+    )
 
 
 def test_gatekeeper_chain_comment_states_the_reframe():
