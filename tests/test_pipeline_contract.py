@@ -555,9 +555,43 @@ def test_gatekeeper_confirms_a_cleared_package_on_the_ticket():
     mov = first(r"^\W*Moved:\s*\W*(Backlog|Question)\W*\s*(→|->)\s*\W*Planned")
     assert pkg is not None, "body lacks a Package/Ticket/Epic line"
     assert chk is not None, "body lacks a 'Checked <what>' line naming something"
+    checked = lines[chk]
+    for term, why in ((r"bundl", "bundling"), (r"Backlog", "the open Backlog"),
+                      (r"clarif", "clarification"), (r"ticket", "the ticket"),
+                      (r"comments", "comments"), (r"code", "code")):
+        assert re.search(term, checked, re.IGNORECASE), (
+            f"the Checked line must name {why} as something checked: {checked!r}"
+        )
     assert mov is not None, "body lacks a 'Moved: <Backlog|Question> -> Planned' line"
     assert pkg < chk < mov, (
         "body lines must come in order: Package/..., Checked ..., Moved: ..."
+    )
+
+    # F4: the comment belongs to the CLEAR path -- Step 4 is entered from
+    # STATUS: CLEAR, and the release call sits in an unconditional lead-in,
+    # not under the (deliberately conditional) frame-comment trigger.
+    text = _read(GATEKEEPER)
+    step3 = _slice(text, "## Step 3 — clarify each package", "## Step 3.5")
+    assert re.search(r"STATUS: CLEAR`?\s*→\s*go to Step 4", step3), (
+        "Step 3 must route STATUS: CLEAR into Step 4"
+    )
+    assert re.match(r"## Step 4[^\n]*\n+\s*On CLEAR", step4), (
+        "Step 4 must be described as entered on CLEAR"
+    )
+    start = found[0]
+    lead = re.sub(r"[\s`]+$", "", step4[:start])
+    lead = lead.rsplit("\n\n", 1)[-1]
+    assert not re.search(r"\b(if|only if|unless|when|whenever|epic)\b", lead,
+                         re.IGNORECASE), (
+        "the release comment's lead-in must not gate it behind a condition: "
+        f"{lead!r}"
+    )
+    assert "`ac:`" not in lead and "premise" not in lead.lower(), (
+        "the release comment must not hang off the frame-comment trigger"
+    )
+    assert not re.search(r"\b(if|only if|unless|whenever)\b", body,
+                         re.IGNORECASE), (
+        "the release comment body must not be conditional"
     )
 
 
@@ -584,10 +618,10 @@ def test_gatekeeper_release_comment_follows_the_planned_move():
     assert signal3 in re.sub(r"\s+", " ", step1), (
         "Step 1 ownership signal 3 wording must stay byte-identical"
     )
-    assert not re.search(r"releas\w*[^.]{0,80}(comment|confirmation)|"
-                         r"(comment|confirmation)[^.]{0,80}releas",
-                         step1, re.IGNORECASE), (
-        "Step 1 must carry no release-comment clause"
+    assert "Released" not in step1 and not re.search(
+        r"releas\w*[\s-]+(confirmation|comment)", step1, re.IGNORECASE), (
+        "Step 1's ownership test must need no exclusion clause for the "
+        "release comment: no mention of Released / release confirmation"
     )
 
 
