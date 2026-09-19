@@ -504,6 +504,55 @@ def test_gatekeeper_posts_the_frame_comment_when_the_ac_was_rewritten():
     assert "context-extractor" in text
 
 
+RELEASED_HEADING = "## Released (gatekeeper)"
+
+
+def test_gatekeeper_confirms_a_cleared_package_on_the_ticket():
+    """#28: on CLEAR the gatekeeper leaves a ticket-level trace of the
+    clearance, not only a column move. The heading, what was checked, that no
+    open questions were found and the target column must sit together in
+    Step 4, right after an add_comment call."""
+    step4 = _slice(_read(GATEKEEPER), "## Step 4", "## Step 5")
+    assert RELEASED_HEADING in step4, f"{RELEASED_HEADING!r} not found in Step 4"
+    pos = step4.index(RELEASED_HEADING)
+    assert "add_comment(" in step4[max(0, pos - 400):pos], (
+        "the release comment heading is not introduced by an add_comment( call"
+    )
+    block = step4[pos:pos + 900]
+    assert re.search(r"no open questions", block, re.IGNORECASE)
+    assert "Checked" in block
+    assert re.search(r"Moved:.*Planned", block)
+
+
+def test_gatekeeper_release_comment_follows_the_planned_move():
+    """The comment asserts the move happened, so it is posted after the
+    Planned update_ticket; and Step 1's ownership test must not mention it."""
+    text = _read(GATEKEEPER)
+    step4 = _slice(text, "## Step 4", "## Step 5")
+    assert RELEASED_HEADING in step4, f"{RELEASED_HEADING!r} not found in Step 4"
+    move = [p for p, c in _call_spans(step4, "update_ticket")
+            if "native of Planned" in c]
+    assert move, "Planned update_ticket not found in Step 4"
+    heading = step4.index(RELEASED_HEADING)
+    assert move[0] < heading, "release comment must come after the Planned move"
+    assert any(p > move[0] for p, _ in _call_spans(step4, "add_comment")), (
+        "no add_comment( call after the Planned move"
+    )
+    step1 = _slice(text, "## Step 1", "## Step 2")
+    assert "adev:event" in step1 and "newer" in step1
+    assert RELEASED_HEADING not in step1
+
+
+def test_gatekeeper_release_comment_is_named_in_the_write_list():
+    hard = _read(GATEKEEPER)
+    hard = hard[hard.index("## Hard rules"):]
+    rule = _slice(hard, "- **Never edit code", "- **Never close")
+    assert re.search(r"release[- ]confirmation", rule, re.IGNORECASE)
+    agents = _read(AGENTS_MD)
+    row = next(l for l in agents.splitlines() if l.startswith("| `gatekeeper` |"))
+    assert re.search(r"release[- ]confirmation", row, re.IGNORECASE)
+
+
 def test_gatekeeper_chain_comment_states_the_reframe():
     text = _read(GATEKEEPER)
     assert "Implemented as:" in text
