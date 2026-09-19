@@ -2236,11 +2236,25 @@ def test_run_reads_the_event_block_leanly():
         assert not re.search(
             r"keep widening|widen(?:ing)? (?:again|repeatedly)|limit=(?:[2-9]\d|\d{3,})\b|until (?:you|an|the)[^.]{0,30}(?:found|event)",
             sl, re.I), f"{where}: widening must not be unbounded"
+        assert not re.search(
+            r"(?:never|do not|don't|must not|not)\s+widen|no\s+widen", sl, re.I
+        ), f"{where}: the widen-once retry must be stated positively, not forbidden"
     # full text of a blocked/failed event: exactly that one comment via get_comment
     _assert_near(step3c, "get_comment(", "blocked", window=400,
                  msg="Step 3c: get_comment not bound to the blocked/failed full-text need")
     _assert_near(step3c, "get_comment(", "failed", window=400,
                  msg="Step 3c: get_comment not bound to the blocked/failed full-text need")
+    gc = _call_spans(step3c, "get_comment")
+    assert any("comment_id=" in c and "ticket_id=" in c for _, c in gc), (
+        "Step 3c: get_comment( must carry comment_id= and ticket_id= (one identified comment)"
+    )
+    flat3c = re.sub(r"\s+", " ", step3c)
+    intro = [x for x in re.split(r"(?<=[.?!;:])\s+", flat3c) if "get_comment(" in x]
+    assert intro and any(re.search(
+        r"exactly (?:that )?one comment|that (?:single|one) comment|the single (?:event )?comment|a single comment|one comment",
+        x, re.I) for x in intro), (
+        "Step 3c: the get_comment( sentence must say it fetches exactly one (the single event) comment"
+    )
 
 
 def test_every_list_comments_call_is_body_bounded():
@@ -2256,6 +2270,19 @@ def test_every_list_comments_call_is_body_bounded():
         assert calls, f"{name}: expected list_comments( calls"
         unbounded = [c for _, c in calls if "body_max_chars=" not in c]
         assert unbounded == [], f"{name}: list_comments without body_max_chars: {unbounded}"
+        too_wide = [c for _, c in calls
+                    if any(int(n) > 600 for n in re.findall(r"body_max_chars=(\d+)", c))]
+        assert too_wide == [], f"{name}: body_max_chars above 600 is not a lean bound: {too_wide}"
+    for label, sl in (
+        ("gatekeeper Step 1 ownership test",
+         _slice(_read(GATEKEEPER), "## Step 1 — enumerate", "## Step 2 — bundle")),
+        ("gatekeeper Step 3.6 idempotency",
+         _slice(_read(GATEKEEPER), "## Step 3.6 — regression chains", "## Step 3.7")),
+    ):
+        cs = _call_spans(sl, "list_comments")
+        assert any("limit=20" in c and "body_max_chars=200" in c for _, c in cs), (
+            f"{label}: heading-only scan must be list_comments(..., limit=20, body_max_chars=200)"
+        )
 
 
 def test_run_triage_idempotency_scan_stays_wide():
@@ -2265,6 +2292,10 @@ def test_run_triage_idempotency_scan_stays_wide():
     assert calls, "triage idempotency scan must spell out its list_comments( call"
     assert any("limit=20" in c and "body_max_chars=200" in c for _, c in calls), (
         "the heading-only scan must keep limit=20 and add body_max_chars=200"
+    )
+    wide = [c for _, c in _call_spans(text, "list_comments") if "limit=20" in c]
+    assert wide and all("body_max_chars=200" in c for c in wide), (
+        "every limit=20 list_comments( call in run is a heading scan and must carry body_max_chars=200"
     )
 
 
@@ -2354,26 +2385,28 @@ def test_write_calls_request_the_light_response():
     # the #314 reference must sit in the same paragraph as a response="light"
     # call site and explain the light form -- not float anywhere in the file
     run_text = _read(RUN)
-    paras = [p for p in re.split(r"\n\s*\n", run_text)
-             if "agent-project-issues#314" in p]
-    assert paras, "run: no reference to agent-project-issues#314"
-    assert any('response="light"' in p and re.search(r"\blight\b", p.replace('response="light"', ""), re.I)
-               for p in paras), (
-        'run: agent-project-issues#314 is not stated next to a response="light" write call'
-    )
+    flat_run = re.sub(r"\s+", " ", run_text)
+    sents = [x for x in re.split(r"(?<=[.?!;])\s+", flat_run)
+             if "agent-project-issues#314" in x]
+    assert sents, "run: no reference to agent-project-issues#314"
+    assert any(
+        'response="light"' in x
+        and re.search(r"update_ticket|merge_pr|write", x)
+        and re.search(r"\blight\b", x.replace('response="light"', ""), re.I)
+        for x in sents
+    ), 'run: the sentence naming agent-project-issues#314 must itself name response="light" and the write call(s)'
     # guards: the lean write form did not drop a field the skill reads
     ci_green = _slice(_read(RUN), "| `ci-green` |", "\n| ")
     mp = [c for _, c in _call_spans(ci_green, "merge_pr")]
     assert mp and all('response="light"' in c for c in mp), (
         "ci-green row: merge_pr call must request response=\"light\""
     )
-    merged_sentences = [
-        s for s in re.split(r"(?<=[.?!])\s+", re.sub(r"\s+", " ", ci_green))
-        if "pull_request.merged == true" in s
-    ]
-    assert merged_sentences and any(
-        re.search(r"\bresponse\b|merge_pr", s) for s in merged_sentences
-    ), "ci-green row: pull_request.merged == true is not bound to the merge_pr response"
+    assert "pull_request.merged == true" in ci_green, (
+        "ci-green row: must still require pull_request.merged == true"
+    )
+    assert ci_green.find("merge_pr(") < ci_green.find("pull_request.merged == true"), (
+        "ci-green row: the merged check must follow (be bound to) the merge_pr call"
+    )
     failure = _slice(_read(RUN), "## Merge outcomes are classified", "## Hard rules")
     _assert_near(failure, "mergeable_state", "get_pr", window=300)
 
@@ -2411,8 +2444,16 @@ def test_run_fallback_heartbeat_is_one_hour():
     )
     assert not re.search(r"\b1800\b", text), "the improvised 1800 s heartbeat must not appear"
     step2b = _slice(text, "**b. Start the package session", "**c. Read the ticket, react.**")
-    assert re.search(r"waiting rule", step2b, re.I), (
-        "Step 2b must point at the Waiting rule"
+    flat2b = re.sub(r"\s+", " ", step2b)
+    pointers = [
+        x for x in re.split(r"(?<=[.?!;])\s+", flat2b)
+        if re.search(r"waiting rule", x, re.I)
+        and re.search(r"\b(?:see|per|as in|as described in|described in|governed by|follows?|defined in|under)\b", x, re.I)
+        and not re.search(r"\b(?:no|not|never)\b|n't", x, re.I)
+    ]
+    assert pointers, "Step 2b must have a sentence that defers to the Waiting rule (see/per/as in ...)"
+    assert not any(re.search(r"\d", x) for x in pointers), (
+        "the Step 2b pointer sentence must not itself carry an interval literal"
     )
     assert not re.search(r"heartbeat|fallback|hourly|interval|wake-?\s?up|ScheduleWakeup|\bevery\b",
                          step2b, re.I), (
