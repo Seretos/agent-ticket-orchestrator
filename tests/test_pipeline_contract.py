@@ -2164,6 +2164,178 @@ def test_gatekeeper_step_3_5_invokes_relation_readback_script():
     )
 
 
+# --- D1: lean MCP requests (#26) -------------------------------------------
+# Both skills request only what they read: bounded comment reads, body-less
+# enumerations, light write echoes, resolution without a full project dump, and
+# a one-hour fallback heartbeat. Prose executed by an LLM -- these assertions
+# bind each knob to its own call site (proximity / per-call parentheses), so a
+# knob mentioned somewhere else in the file cannot satisfy them.
+
+PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
+
+
+def _call_spans(text: str, name: str) -> list:
+    """Every `name(` call in `text` as (start, full_call_text), the call text
+    running to the matching closing parenthesis (balanced), so a multi-line
+    call is checked as one unit."""
+    spans = []
+    for m in re.finditer(re.escape(name) + r"\(", text):
+        depth, i = 0, m.end() - 1
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        spans.append((m.start(), text[m.start():i + 1]))
+    return spans
+
+
+def _run_step0() -> str:
+    return _slice(_read(RUN), "### 0. Pre-flight", "### 1. Enumerate")
+
+
+def _run_step3c() -> str:
+    return _slice(_read(RUN), "**c. Read the ticket, react.**", "**d. Worktree removal.**")
+
+
+def _lean_event_read(slice_: str, where: str) -> None:
+    calls = _call_spans(slice_, "list_comments")
+    assert calls, f"{where}: no list_comments( call"
+    assert any(
+        'order="desc"' in c and "limit=3" in c and "body_max_chars=600" in c
+        for _, c in calls
+    ), f'{where}: the event read must be list_comments(order="desc", limit=3, body_max_chars=600)'
+    assert not any("limit=20" in c and "body_max_chars" not in c for _, c in calls), (
+        f"{where}: unbounded limit=20 full-body event read still present"
+    )
+
+
+def test_run_reads_the_event_block_leanly():
+    step0, step3c = _run_step0(), _run_step3c()
+    _lean_event_read(step0, "Step 0")
+    _lean_event_read(step3c, "Step 3c")
+    for where, sl in (("Step 0", step0), ("Step 3c", step3c)):
+        # widen once to limit=10 when none of the three carries the event block
+        assert re.search(r"limit=10", sl), f"{where}: no widen-once retry at limit=10"
+        _assert_near(sl, "limit=10", "<!-- adev:event", window=600,
+                     msg=f"{where}: widen-once sentence not bound to the adev:event block")
+    # full text of a blocked/failed event: exactly that one comment via get_comment
+    _assert_near(step3c, "get_comment(", "blocked", window=400,
+                 msg="Step 3c: get_comment not bound to the blocked/failed full-text need")
+    _assert_near(step3c, "get_comment(", "failed", window=400,
+                 msg="Step 3c: get_comment not bound to the blocked/failed full-text need")
+
+
+def test_every_list_comments_call_is_body_bounded():
+    """File-wide invariant: no list_comments( call is unbounded. gatekeeper
+    Step 2's previous_cut / changed_by lookups read comment *content* and are
+    the declared full-body exception, so that section is excluded."""
+    run_text = _read(RUN)
+    gk_text = _read(GATEKEEPER)
+    gk_step2 = _slice(gk_text, "## Step 2 — bundle", "## Step 3 — clarify")
+    gk_text = gk_text.replace(gk_step2, "")
+    for name, text in (("run", run_text), ("gatekeeper", gk_text)):
+        calls = _call_spans(text, "list_comments")
+        assert calls, f"{name}: expected list_comments( calls"
+        unbounded = [c for _, c in calls if "body_max_chars=" not in c]
+        assert unbounded == [], f"{name}: list_comments without body_max_chars: {unbounded}"
+
+
+def test_run_triage_idempotency_scan_stays_wide():
+    text = _read(RUN)
+    scan = _slice(text, "Triage once per package per run", "This replaces the old two-stage design")
+    calls = _call_spans(scan, "list_comments")
+    assert calls, "triage idempotency scan must spell out its list_comments( call"
+    assert any("limit=20" in c and "body_max_chars=200" in c for _, c in calls), (
+        "the heading-only scan must keep limit=20 and add body_max_chars=200"
+    )
+
+
+def test_enumerations_omit_bodies():
+    run_step1 = _slice(_read(RUN), "### 1. Enumerate", "### 1a.")
+    gk_step1 = _slice(_read(GATEKEEPER), "## Step 1 — enumerate", "## Step 2 — bundle")
+    sites = [
+        ("run Todo", run_step1, "list_tickets", 'column="Todo"'),
+        ("gatekeeper Backlog", gk_step1, "list_tickets", 'column="Backlog"'),
+        ("gatekeeper Question", gk_step1, "list_tickets", 'column="Question"'),
+    ]
+    for label, sl, fn, col in sites:
+        calls = [c for _, c in _call_spans(sl, fn) if col in c]
+        assert calls, f"{label}: no {fn}( call with {col}"
+        assert all("omit_body=True" in c for c in calls), f"{label}: {fn} must pass omit_body=True"
+    # Step 1a keeps reading relations exactly as before
+    step1a = _slice(_read(RUN), "### 1a.", "### When is a blocker resolved")
+    assert "include_relations=True" in step1a
+
+
+def test_project_resolution_is_lean():
+    for name, path in (("run", RUN), ("gatekeeper", GATEKEEPER)):
+        text = _read(path)
+        assert not re.search(r"list_projects\(\s*\)", text), (
+            f"{name}: bare list_projects() full dump still present"
+        )
+        searches = _call_spans(text, "search_projects")
+        assert searches and all("query=" in c for _, c in searches), (
+            f"{name}: resolution must call search_projects(query=...)"
+        )
+        _assert_near(text, "search_projects(", "`path`", window=300,
+                     msg=f"{name}: search_projects not bound to the exact-path rule")
+        _assert_near(text, 'list_projects(fields="light")', "STOP", window=300,
+                     msg=f"{name}: light list_projects not bound to the STOP diagnostic")
+        # guard: the fields both skills read from the resolved entry are still named
+        for field in ("permissions", "local_path", "provider"):
+            assert field in text, f"{name}: {field} no longer named as read from the entry"
+
+
+def test_write_calls_request_the_light_response():
+    for name, path, fns in (
+        ("run", RUN, ("update_ticket", "merge_pr")),
+        ("gatekeeper", GATEKEEPER, ("update_ticket",)),
+    ):
+        text = _read(path)
+        for fn in fns:
+            calls = _call_spans(text, fn)
+            assert calls, f"{name}: expected {fn}( call sites"
+            missing = [c for _, c in calls if 'response="light"' not in c]
+            assert missing == [], f'{name}: {fn} calls without response="light": {missing}'
+        assert not any("response=" in c for _, c in _call_spans(text, "add_comment")), (
+            f"{name}: add_comment must stay out of scope"
+        )
+    assert "agent-project-issues#314" in _read(RUN)
+    # guards: the lean write form did not drop a field the skill reads
+    ci_green = _slice(_read(RUN), "| `ci-green` |", "\n| ")
+    assert "pull_request.merged == true" in ci_green
+    failure = _slice(_read(RUN), "## Merge outcomes are classified", "## Hard rules")
+    _assert_near(failure, "mergeable_state", "get_pr", window=300)
+
+
+def test_plugin_manifest_pins_the_light_write_build():
+    import json
+    deps = {d["name"]: d["version"] for d in json.loads(_read(PLUGIN_MANIFEST))["dependencies"]}
+    floor = re.match(r">=\s*(\d+)\.(\d+)\.(\d+)", deps["agent-project-issues"])
+    assert floor, deps["agent-project-issues"]
+    assert tuple(int(x) for x in floor.groups()) >= (0, 3, 4), (
+        f"agent-project-issues floor {deps['agent-project-issues']!r} predates the light write form"
+    )
+
+
+def test_run_fallback_heartbeat_is_one_hour():
+    text = _read(RUN)
+    waiting = _slice(text, "## Waiting rule", "## Why there is no dollar budget")
+    assert re.search(r"\b3600\b", waiting), "Waiting rule names no 3600 s fallback interval"
+    _assert_near(waiting, re.compile(r"\b3600\b"), "fallback", window=300)
+    _assert_near(waiting, re.compile(r"\b3600\b"), "notification", window=300)
+    assert re.search(r"never[^.]*polls? CI", waiting), "the no-polling rule must remain"
+    assert not re.search(r"\b1800\b", text), "the improvised 1800 s heartbeat must not appear"
+    step2b = _slice(text, "**b. Start the package session", "**c. Read the ticket, react.**")
+    assert not re.search(r"\b\d{3,5}\s*s\b", step2b), (
+        "Step 2b must point at the Waiting rule, not restate a seconds interval"
+    )
+
+
 # --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------
 
 def test_every_parsed_markdown_file_is_lf_only():
