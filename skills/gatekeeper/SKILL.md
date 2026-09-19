@@ -34,11 +34,17 @@ projects to the point where finding the asked-about tickets was work).
   Resolution, in this order: an explicit `project_id=<id>` argument wins;
   otherwise run `git remote get-url origin`, reduce it to `owner/repo`
   (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
-  → `owner/repo`), and take the single `list_projects()` entry whose `path`
-  equals it. No match or more than one → STOP and say which repo you resolved
-  and what `list_projects` returned — never pick one. Thread the resolved id
-  into every MCP call and every subagent prompt.
-- The project's `local_path` (from `list_projects`) — handed to the subagents
+  → `owner/repo`), call `search_projects(query="<owner/repo>", limit=5)` and
+  take the single result whose `path` equals it exactly. Pass its `id` on
+  **verbatim** (search matches case-insensitively, every other tool is
+  case-sensitive). No match or more than one → STOP and say which repo you
+  resolved and which configured ids `list_projects(fields="light")` returned
+  — never pick one. Thread the resolved id into every MCP call and every
+  subagent prompt. (Light `list_projects` returns only `{id, provider}`,
+  which is why it serves the STOP message but not the resolution: this skill
+  reads `path`, `permissions`, `local_path` and `provider` from the resolved
+  entry.)
+- The project's `local_path` (read from the resolved project entry) — handed to the subagents
   so they can look at the code.
 
 ## Preconditions
@@ -54,12 +60,12 @@ projects to the point where finding the asked-about tickets was work).
    on the board — `ensure_board_column` can create it but needs
    `permissions.board.manage`. Never hardcode a native name ("Frage offen" vs
    "Question" is a per-board choice; the logical name is the contract).
-3. **Write permission.** `list_projects` → `permissions.issues.create` and
+3. **Write permission.** From the resolved project entry read `permissions.issues.create` and
    `issues.modify` must be `true` (you create epics, add relations, post
    comments, move cards). Otherwise STOP and say which flag is missing.
 4. **Relation vocabulary.** `list_relation_kinds()` is called once, at the
    start of Step 2, and its result is kept for the rest of the pass:
-   `provider_support` for this project's `provider` (from `list_projects`)
+   `provider_support` for this project's `provider` (read from the resolved project entry)
    decides the dependency-writing path in Step 3.5. A provider without
    `blocked_by` (GitLab) is **not** a stop condition — see Step 3.5's
    fallback.
@@ -67,8 +73,8 @@ projects to the point where finding the asked-about tickets was work).
 ## Step 1 — enumerate the Backlog, and your own answered Question cards
 
 ```
-list_tickets(project_id, column="Backlog", status="open", limit=100)
-list_tickets(project_id, column="Question", status="open", limit=100)
+list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True)
+list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True)
 ```
 
 Then drop every ticket that is **already a child of an epic**: for each
@@ -78,7 +84,8 @@ epic, not the child, is what moves). Keep epics themselves in the list; the
 bundler may fold further tickets into them or leave them as-is.
 
 **Question cards are yours only when all three hold**, checked per card via
-`list_comments(order="desc")`:
+`list_comments(project_id, ticket_id, order="desc", limit=20, body_max_chars=200)`
+(a heading scan needs no bodies; only Step 2's `previous_cut` / `changed_by` look-ups read comment content, and they read it in full):
 
 1. it carries a `## Clarification needed (gatekeeper)` comment — you put it
    there;
@@ -242,7 +249,7 @@ It ends with a status line:
   Then move the package ticket to **Question**:
 
   ```
-  update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Question>})
+  update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Question>}, response="light")
   ```
 
   and move on to the **next** package immediately — do not wait here. Record
@@ -378,15 +385,15 @@ and the report is the only place it is visible.
 
 Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
 
-1. **Idempotency first.** `list_comments` — if a
+1. **Idempotency first.** `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)` (a heading scan) — if a
    `## Regression chain (gatekeeper)` comment already exists **and** the
    package already carries the `regression-chain` label, do nothing here; the
    chain was recorded on an earlier pass and re-posting it is noise on
    exactly the ticket that already has too much history.
-2. **Label.** `list_labels(project_id)` — `create_label(project_id,
+2. **Label.** (Every `update_ticket` here passes `response="light"` — the write tools return a light echo by default since `Seretos/agent-project-issues#314`, and this skill reads nothing from them.) `list_labels(project_id)` — `create_label(project_id,
    "regression-chain")` if absent (GitHub 404s on an unknown label at write
    time) — then `update_ticket(project_id, ticket_id=<package>,
-   labels_add=["regression-chain"])`.
+   labels_add=["regression-chain"], response="light")`.
 3. **Comment.** `add_comment(project_id, ticket_id=<package>, body=…)`:
 
    ```
@@ -519,7 +526,7 @@ Step 3.6 — skip it when an identical `## Frame (gatekeeper)` comment already
 exists. Then:
 
 ```
-update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>})
+update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>}, response="light")
 ```
 
 This is the same call whether the package came from Backlog or from your own

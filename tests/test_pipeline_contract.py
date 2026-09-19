@@ -2234,8 +2234,11 @@ def test_run_reads_the_event_block_leanly():
         _assert_near(sl, "limit=10", "no terminal event", window=400,
                      msg=f"{where}: widen-once does not precede the 'no terminal event' conclusion")
         assert not re.search(
-            r"keep widening|widen(?:ing)? (?:again|repeatedly)|limit=(?:[2-9]\d|\d{3,})\b|until (?:you|an|the)[^.]{0,30}(?:found|event)",
+            r"keep widening|widen(?:ing)? (?:again|repeatedly)|until (?:you|an|the)[^.]{0,30}(?:found|event)",
             sl, re.I), f"{where}: widening must not be unbounded"
+        assert not any(re.search(r"limit=(?:2[1-9]|[3-9]\d|\d{3,})\b", c)
+                       for _, c in _call_spans(sl, "list_comments")), (
+            f"{where}: a list_comments( call reads a wide page")
         assert not re.search(
             r"(?:never|do not|don't|must not|not)\s+widen|no\s+widen", sl, re.I
         ), f"{where}: the widen-once retry must be stated positively, not forbidden"
@@ -2280,7 +2283,7 @@ def test_every_list_comments_call_is_body_bounded():
          _slice(_read(GATEKEEPER), "## Step 3.6 — regression chains", "## Step 3.7")),
     ):
         cs = _call_spans(sl, "list_comments")
-        assert any("limit=20" in c and "body_max_chars=200" in c for _, c in cs), (
+        assert any(re.search(r"\blimit=20\b", c) and "body_max_chars=200" in c for _, c in cs), (
             f"{label}: heading-only scan must be list_comments(..., limit=20, body_max_chars=200)"
         )
 
@@ -2290,10 +2293,10 @@ def test_run_triage_idempotency_scan_stays_wide():
     scan = _slice(text, "Triage once per package per run", "This replaces the old two-stage design")
     calls = _call_spans(scan, "list_comments")
     assert calls, "triage idempotency scan must spell out its list_comments( call"
-    assert any("limit=20" in c and "body_max_chars=200" in c for _, c in calls), (
+    assert any(re.search(r"\blimit=20\b", c) and "body_max_chars=200" in c for _, c in calls), (
         "the heading-only scan must keep limit=20 and add body_max_chars=200"
     )
-    wide = [c for _, c in _call_spans(text, "list_comments") if "limit=20" in c]
+    wide = [c for _, c in _call_spans(text, "list_comments") if re.search(r"\blimit=20\b", c)]
     assert wide and all("body_max_chars=200" in c for c in wide), (
         "every limit=20 list_comments( call in run is a heading scan and must carry body_max_chars=200"
     )
@@ -2407,7 +2410,7 @@ def test_write_calls_request_the_light_response():
     assert ci_green.find("merge_pr(") < ci_green.find("pull_request.merged == true"), (
         "ci-green row: the merged check must follow (be bound to) the merge_pr call"
     )
-    failure = _slice(_read(RUN), "## Merge outcomes are classified", "## Hard rules")
+    failure = _slice(_read(RUN), "**When the merge fails", "**The pre-retry CI check")
     _assert_near(failure, "mergeable_state", "get_pr", window=300)
 
 

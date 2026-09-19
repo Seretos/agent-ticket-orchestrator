@@ -25,10 +25,15 @@ carry any project content in your context.
   Resolution, in this order: an explicit `project_id=<id>` argument wins;
   otherwise run `git remote get-url origin`, reduce it to `owner/repo`
   (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
-  → `owner/repo`), and take the single `list_projects()` entry whose `path`
-  equals it. No match or more than one → STOP and say which repo you resolved
-  and what `list_projects` returned — never pick one. Thread the resolved id
-  into every MCP call and every subagent prompt.
+  → `owner/repo`), call `search_projects(query="<owner/repo>", limit=5)` and
+  take the single result whose `path` equals it exactly. Pass its `id` on
+  **verbatim** (search matches case-insensitively, every other tool is
+  case-sensitive). No match or more than one → STOP and say which repo you
+  resolved and which configured ids `list_projects(fields="light")` returned
+  — never pick one. Thread the resolved id into every MCP call and every
+  subagent prompt. (Light `list_projects` returns only `{id, provider}`,
+  which is why it serves the STOP message but not the resolution: this skill
+  reads `path`, `permissions` and `local_path` from the resolved entry.)
 - **Inside a project there is no parallelism**: one package, one worktree,
   one process at a time. Parallel `claude` starts race on `~/.claude.json`
   and parallel worktrees race on shared services; the night is long enough.
@@ -52,11 +57,11 @@ carry any project content in your context.
    columns `Todo`, `Doing`, `Review`, `Done`, `Question`. Keep the
    `logical → native` map; every board write uses the *native* value. Missing
    column → STOP for this project with the missing name.
-3. **Merge permission.** From `list_projects` read `permissions.pulls.merge`.
+3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.
    If `false`, still run — but instead of merging, leave the package in
    `Review` and append a final comment *"CI green, merge not permitted for
    this project — merge manually"*. Say so in the report up front.
-4. **Repo root.** `local_path` from `list_projects` must exist on disk and be
+4. **Repo root.** `local_path` from the resolved project entry must exist on disk and be
    a git checkout; the default branch is `git -C <local_path> symbolic-ref
    --short refs/remotes/origin/HEAD` (fallback: `main`). `worktree_create`
    fetches `origin` itself.
@@ -73,7 +78,10 @@ Keep the entries whose head branch starts with `pkg/`. Each one is an earlier
 run's package that never merged, and each one is a base this run's worktrees
 will **not** contain. For each, in board order: recover the package id from
 `pkg/<id>-<slug>` and read its latest `adev:event`
-(`list_comments(project_id, ticket_id=<package>, order="desc", limit=20)`).
+(`list_comments(project_id, ticket_id=<package>, order="desc", limit=3, body_max_chars=600)`;
+take the first comment containing `<!-- adev:event`. If none of the three
+carries it, repeat once with `limit=10` (same `body_max_chars`) before
+concluding no terminal event).
 
 - **Latest event is `ci-green`** → finish it now: run the full **2c
   `ci-green`** reaction below, classification and rebase retry included.
@@ -95,7 +103,7 @@ two halves of this change belong together.
 ### 1. Enumerate
 
 ```
-packages = list_tickets(project_id, column="Todo", status="open", limit=100)
+packages = list_tickets(project_id, column="Todo", status="open", limit=100, omit_body=True)
 ```
 
 **Only Todo.** Never read Backlog or Planned as candidates — those columns are
@@ -112,7 +120,8 @@ dependency as described next.
    blockers[p] = [r.ticket_id for r in relations if r.kind == "blocked_by"]
    On a provider whose list_relation_kinds provider_support lacks blocked_by
    (GitLab), ALSO read the newest "## Dependency (gatekeeper)" comment's
-   <!-- gatekeeper:deps v1 ... --> block via list_comments and take its
+   <!-- gatekeeper:deps v1 ... --> block via `list_comments(project_id,
+   ticket_id=p, order="desc", limit=10, body_max_chars=600)` and take its
    blocked_by: line — same dumb key: value reader as adev:event, one more
    block, no new mechanism. Skip that call entirely on github/azuredevops.
 3. Classify every blocker b (memoise per b for the whole run — see "When is
@@ -240,7 +249,7 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
   `<n-1>`; the conflict retry in 2c handles the fallout. Do not stop the run,
   do not skip the remaining packages, and do not "fix" this by parallelising.
 
-- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>})`.
+- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"`: the write tools return a light echo of only a few identifying fields (`Seretos/agent-project-issues#314`), and this skill reads nothing else out of them but `pull_request.merged`.
 - Branch name: `pkg/<id>-<slug>` (slug = title, lower-case, `[^a-z0-9]+` → `-`,
   trimmed, max 40 chars).
 - `environment_list()` first: if a worktree for that branch already exists
@@ -263,8 +272,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" <project_id> <id> 
 The script owns the mechanics (run directory, launch lock around the start,
 stream/stderr files, exit marker — see its header) and prints `RUNDIR=…`
 first and `EXIT=<code>` last. Then **stop and wait for the completion
-notification**. Do not poll the ticket, do not read the stream, do not start
-a second package. CI rounds of up to 45 minutes and three review rounds all
+notification**, as described in the *Waiting rule* below. Do not poll the ticket, do not read the stream, do not start
+a second package. CI rounds and three review rounds all
 happen inside that process; hours are normal. `EXIT` and `RUNDIR` are
 informational; you never read `stream.jsonl` into your context (the
 orchestrator stays free of project content) — `tail -n 3 "<RUNDIR>/stderr.txt"`
@@ -274,16 +283,21 @@ is allowed to classify a crash.
 the ticket. Call
 
 ```
-list_comments(project_id, ticket_id=<package>, order="desc", limit=20)
+list_comments(project_id, ticket_id=<package>, order="desc", limit=3, body_max_chars=600)
 ```
 
-and take the **first** comment whose body contains `<!-- adev:event`. Parse
+and take the **first** comment whose body contains `<!-- adev:event`. If none
+of the three carries it, repeat the call once with `limit=10` (same
+`body_max_chars`); only if that also has none is it "no terminal event". When
+the full text of a `blocked`/`failed` event is needed for a Question comment,
+fetch exactly that one comment with
+`get_comment(project_id, comment_id=<its id>, ticket_id=<package>)`. Parse
 the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 `rounds`, `pr`, `ci_run`; empty = unknown; unknown keys ignored). Then:
 
 | latest event | you do |
 |---|---|
-| `ci-green` | `merge_pr(project_id, pr_id=<pr>)` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
+| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
 | `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
@@ -322,7 +336,8 @@ So instead of setting the package aside:
    cannot resolve.
 4. **Triage once per package per run.** Before dispatching triage, check whether this package's
    ticket already carries a `## Blocked triage (run)` comment from earlier in this run
-   (`list_comments`, search for the heading). If it does, a second `blocked` event goes straight to
+   (`list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`,
+   search for the heading). If it does, a second `blocked` event goes straight to
    the `ESCALATE` reaction above — a triage-answered redispatch that blocks again means the answer
    did not hold or a materially different question surfaced, and either way a second guess is not
    this system's to make alone.
@@ -402,7 +417,7 @@ and a conflict is a retry* below for why they do not share a counter).
    as step 2b. A repair session is short but still runs the CI gate — budget
    the same 45-minute rounds.
 3. **React to the new latest event.**
-   - `ci-green` → back to the top of the `ci-green` row: `merge_pr`, verify
+   - `ci-green` → back to the top of the `ci-green` row: `merge_pr(…, response="light")`, verify
      `merged: true`, → **Done**, `worktree_remove`. Note `merged after
      rebase` in the report.
    - `ci-green` and the merge fails **again** → stop. `add_comment` naming
@@ -428,7 +443,7 @@ available to you are exactly this classification table and nothing else.
 Never write Question for a reason unrelated to the merge, never leave a
 `ci-green` package in **Doing**, and never carry a stale escalation from an
 earlier attempt forward past a later `ci-green`. Only the **latest** event
-counts — that is why you always read `list_comments(order="desc")` and take
+counts — that is why you always read `list_comments(order="desc", limit=3, body_max_chars=600)` and take
 the *first* `adev:event`, before every decision, including a triage-driven
 re-dispatch and every escalation.
 
@@ -466,6 +481,9 @@ started in step 2b. Everything slower than that (CI rounds of up to 45
 minutes, three review rounds) happens *inside* that process. So a single
 package can occupy you for hours; that is fine. Do not start a second
 package to "use the time".
+
+The completion notification is the wake. If a fallback wake-up is scheduled at all while a package session
+runs, it is 3600 s, never shorter, and it is not a poll: it reads nothing.
 
 ## Why there is no dollar budget
 

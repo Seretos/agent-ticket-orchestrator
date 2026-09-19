@@ -131,7 +131,11 @@ forms silently vanish.
 
 ### Why state lives in the ticket, not in the return value
 
-A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: the process exit code is a courtesy, and `run` re-reads `list_comments(order="desc")` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
+A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: the process exit code is a courtesy, and `run` re-reads `list_comments(order="desc", limit=3, body_max_chars=600)` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
+
+### Both skills request only what they read (`agent-ticket-orchestrator#26`)
+
+A night's `run` was >90% MCP response echo the skills never read. Two cross-repo facts are not derivable from any single file here: **light `list_projects` (`fields="light"`) returns only `{id, provider}`** — it drops `path`, `permissions` and `local_path`, which both skills read from the resolved entry, and there is no single-project tool — so resolution uses `search_projects(query="<owner/repo>", limit=5)` and light `list_projects` serves only the STOP message; and **the write tools (`update_ticket`, `merge_pr`, …) return a light echo by default since `Seretos/agent-project-issues#314`**, which is why `.claude-plugin/plugin.json` floors that dependency at `>=0.3.4` and the skills pass `response="light"` with no fallback branch. Every `list_comments(` call in either skill passes `body_max_chars`; only `gatekeeper` Step 2's `previous_cut` / `changed_by` look-ups read full comment bodies. The fallback wake-up while a package session runs is 3600 s, not a poll.
 
 ### Why the package session is a CLI process started by the skill itself — not an `Agent` subagent, not a wrapper
 
