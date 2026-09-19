@@ -2189,6 +2189,10 @@ def _call_spans(text: str, name: str) -> list:
                 if depth == 0:
                     break
             i += 1
+        assert i < len(text), (
+            f"unbalanced parenthesis in {name}( call at offset {m.start()}: "
+            f"{text[m.start():m.start() + 80]!r}"
+        )
         spans.append((m.start(), text[m.start():i + 1]))
     return spans
 
@@ -2218,10 +2222,20 @@ def test_run_reads_the_event_block_leanly():
     _lean_event_read(step0, "Step 0")
     _lean_event_read(step3c, "Step 3c")
     for where, sl in (("Step 0", step0), ("Step 3c", step3c)):
-        # widen once to limit=10 when none of the three carries the event block
+        # widen once to limit=10 when none of the three carries the event block:
+        # trigger (none carries it) + single retry + consequence (no terminal event)
         assert re.search(r"limit=10", sl), f"{where}: no widen-once retry at limit=10"
         _assert_near(sl, "limit=10", "<!-- adev:event", window=600,
                      msg=f"{where}: widen-once sentence not bound to the adev:event block")
+        _assert_near(sl, "limit=10", re.compile(r"\bnone\b|\bneither\b|\bno\b[^.]{0,40}carries", re.I),
+                     window=250, msg=f"{where}: widen-once has no trigger condition")
+        _assert_near(sl, "limit=10", re.compile(r"\bonce\b|\bone retry\b|\bsingle retry\b", re.I),
+                     window=250, msg=f"{where}: widen-once is not stated as a single retry")
+        _assert_near(sl, "limit=10", "no terminal event", window=400,
+                     msg=f"{where}: widen-once does not precede the 'no terminal event' conclusion")
+        assert not re.search(
+            r"keep widening|widen(?:ing)? (?:again|repeatedly)|limit=(?:[2-9]\d|\d{3,})\b|until (?:you|an|the)[^.]{0,30}(?:found|event)",
+            sl, re.I), f"{where}: widening must not be unbounded"
     # full text of a blocked/failed event: exactly that one comment via get_comment
     _assert_near(step3c, "get_comment(", "blocked", window=400,
                  msg="Step 3c: get_comment not bound to the blocked/failed full-text need")
@@ -2281,13 +2295,24 @@ def test_project_resolution_is_lean():
         assert searches and all("query=" in c for _, c in searches), (
             f"{name}: resolution must call search_projects(query=...)"
         )
-        _assert_near(text, "search_projects(", "`path`", window=300,
-                     msg=f"{name}: search_projects not bound to the exact-path rule")
+        _assert_near(
+            text, "search_projects(",
+            re.compile(r"single[^.]*`path`[^.]*(?:equals|exactly)", re.I),
+            window=400,
+            msg=f"{name}: search_projects not bound to the single exact-`path`-match rule",
+        )
         _assert_near(text, 'list_projects(fields="light")', "STOP", window=300,
                      msg=f"{name}: light list_projects not bound to the STOP diagnostic")
-        # guard: the fields both skills read from the resolved entry are still named
-        for field in ("permissions", "local_path", "provider"):
-            assert field in text, f"{name}: {field} no longer named as read from the entry"
+    # guard: the fields each skill reads from the resolved entry are still named
+    # in that skill's own Inputs/Preconditions (not merely somewhere in the file)
+    run_pre = _slice(_read(RUN), "## Inputs", "## Flow per project")
+    gk_pre = _slice(_read(GATEKEEPER), "## Inputs", "## Step 1 — enumerate")
+    for name, sl, fields in (
+        ("run", run_pre, ("permissions", "local_path")),
+        ("gatekeeper", gk_pre, ("permissions", "local_path", "provider")),
+    ):
+        for field in fields:
+            assert field in sl, f"{name}: {field} no longer named in Inputs/Preconditions"
 
 
 def test_write_calls_request_the_light_response():
@@ -2304,7 +2329,16 @@ def test_write_calls_request_the_light_response():
         assert not any("response=" in c for _, c in _call_spans(text, "add_comment")), (
             f"{name}: add_comment must stay out of scope"
         )
-    assert "agent-project-issues#314" in _read(RUN)
+    # the #314 reference must sit in the same paragraph as a response="light"
+    # call site and explain the light form -- not float anywhere in the file
+    run_text = _read(RUN)
+    paras = [p for p in re.split(r"\n\s*\n", run_text)
+             if "agent-project-issues#314" in p]
+    assert paras, "run: no reference to agent-project-issues#314"
+    assert any('response="light"' in p and re.search(r"\blight\b", p.replace('response="light"', ""), re.I)
+               for p in paras), (
+        'run: agent-project-issues#314 is not stated next to a response="light" write call'
+    )
     # guards: the lean write form did not drop a field the skill reads
     ci_green = _slice(_read(RUN), "| `ci-green` |", "\n| ")
     assert "pull_request.merged == true" in ci_green
@@ -2331,9 +2365,13 @@ def test_run_fallback_heartbeat_is_one_hour():
     assert re.search(r"never[^.]*polls? CI", waiting), "the no-polling rule must remain"
     assert not re.search(r"\b1800\b", text), "the improvised 1800 s heartbeat must not appear"
     step2b = _slice(text, "**b. Start the package session", "**c. Read the ticket, react.**")
-    assert not re.search(r"\b\d{3,5}\s*s\b", step2b), (
-        "Step 2b must point at the Waiting rule, not restate a seconds interval"
+    assert re.search(r"waiting rule", step2b, re.I), (
+        "Step 2b must point at the Waiting rule"
     )
+    assert not re.search(
+        r"\b\d{2,5}\s*(?:s|sec|secs|seconds?|min|minutes?|h|hours?)\b|\b(?:one|an|half an) hour\b",
+        step2b, re.I,
+    ), "Step 2b must point at the Waiting rule, not restate an interval"
 
 
 # --- cross-cutting: LF only (Claude Code silently ignores CRLF) ------------
