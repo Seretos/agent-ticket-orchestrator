@@ -534,6 +534,22 @@ answered Question card (Step 1) — Question → Planned is the one move out of
 Question a skill makes, and only for a card the gatekeeper itself put there
 and a human has since replied on. `run`'s Question cards are never touched.
 
+Then leave the release confirmation, always, once the move above has succeeded — the comment asserts a move that happened, so a failed move leaves nothing behind. Write `Question` in place of `Backlog` on the `Moved:` line for a card reclaimed from Question; the body has no other variable part:
+
+```
+add_comment(project_id, ticket_id=<package>, body=…)
+```
+
+```
+## Released (gatekeeper)
+
+Package: <single #<id> | epic #<id> (children #a, #b)> — <bundler reason>
+Checked: bundling against the open Backlog, then clarification against ticket, comments and code — no open questions.
+Moved: Backlog → Planned. Planned → Todo stays a human move.
+```
+
+The MCP prepends the `#ai-generated` marker; do not write it yourself. Pass no `response=` argument, and read no comments back to verify the post.
+
 Only the **package ticket** moves. Children of an epic stay exactly where they
 are (Backlog) — the board shows one card per unit of work, and the `run`
 enumerates Todo only, so a child never gets dispatched on its own.
@@ -587,7 +603,7 @@ are all in the Question column — then run
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
   `blocked_by`/`relates_to` relations, labels (including `regression-chain`),
   clarification comments, dependency comments, frame comments,
-  regression-chain comments, and the Backlog → Planned, Backlog → Question
+  regression-chain comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body.

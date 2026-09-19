@@ -157,7 +157,7 @@ Two `claude` processes starting at the same moment race on `~/.claude.json` and 
 
 | skill | human | may `AskUserQuestion` | how it surfaces a question | writes |
 |---|---|---|---|---|
-| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, moves it to Question, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/frame/dependency/regression-chain comments, Backlog → Planned, Backlog → Question, Question → Planned (own answered cards only) |
+| `gatekeeper` | starts the session, not needed at the keyboard while it runs | **no — never granted, never used** | posts `## Clarification needed (gatekeeper)` on the package ticket, moves it to Question, moves to the next package | epics, `parent` relations, `blocked_by`/`relates_to` relations, `epic`/`regression-chain` labels, clarification/frame/dependency/regression-chain/release-confirmation comments, Backlog → Planned, Backlog → Question, Question → Planned (own answered cards only) |
 | `run` | absent, may run all night | no (tool not granted) | posts the question as a ticket comment, moves the card to Question | Todo → Doing → Done/Question, `merge_pr`, worktrees, the few comments the skill names; leaves a blocked package untouched in Todo |
 | `ticket` | at the keyboard, answering three questions | **yes — this is where it lives** | asks the symptom/measurement/prior-attempts questions live, in chat | one `create_ticket` call, nothing else |
 
