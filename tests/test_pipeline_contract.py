@@ -2282,7 +2282,13 @@ def test_enumerations_omit_bodies():
         assert all("omit_body=True" in c for c in calls), f"{label}: {fn} must pass omit_body=True"
     # Step 1a keeps reading relations exactly as before
     step1a = _slice(_read(RUN), "### 1a.", "### When is a blocker resolved")
-    assert "include_relations=True" in step1a
+    gt = [c for _, c in _call_spans(step1a, "get_ticket")]
+    assert any("include_relations=True" in c and "include_comments=False" in c
+               for c in gt), (
+        "Step 1a: one get_ticket( call must carry both include_relations=True "
+        "and include_comments=False")
+    assert not any("include_comments=True" in c for c in gt), (
+        "Step 1a: a get_ticket( call re-enables include_comments")
 
 
 def test_project_resolution_is_lean():
@@ -2292,8 +2298,13 @@ def test_project_resolution_is_lean():
             f"{name}: bare list_projects() full dump still present"
         )
         searches = _call_spans(text, "search_projects")
-        assert searches and all("query=" in c for _, c in searches), (
-            f"{name}: resolution must call search_projects(query=...)"
+        assert searches and all("query=" in c and re.search(r"limit=5\b", c)
+                                for _, c in searches), (
+            f"{name}: every search_projects( call must carry query= and limit=5"
+        )
+        lists = [c for _, c in _call_spans(text, "list_projects")]
+        assert all('fields="light"' in c for c in lists), (
+            f"{name}: every list_projects( call must be the fields=\"light\" one: {lists}"
         )
         _assert_near(
             text, "search_projects(",
@@ -2311,8 +2322,19 @@ def test_project_resolution_is_lean():
         ("run", run_pre, ("permissions", "local_path")),
         ("gatekeeper", gk_pre, ("permissions", "local_path", "provider")),
     ):
+        sentences = re.split(r"(?<=[.?!:])\s+", re.sub(r"\s+", " ", sl))
         for field in fields:
-            assert field in sl, f"{name}: {field} no longer named in Inputs/Preconditions"
+            bound = [
+                s for s in sentences
+                if field in s
+                and re.search(r"\b(?:read|reads|take|takes|taken)\b", s, re.I)
+                and re.search(r"resolved|\bentry\b|\brecord\b|search_projects|list_projects", s, re.I)
+                and not re.search(r"no longer|not available|not carried|not returned", s, re.I)
+            ]
+            assert bound, (
+                f"{name}: no sentence in Inputs/Preconditions reads {field} "
+                "from the resolved project entry"
+            )
 
 
 def test_write_calls_request_the_light_response():
@@ -2341,7 +2363,17 @@ def test_write_calls_request_the_light_response():
     )
     # guards: the lean write form did not drop a field the skill reads
     ci_green = _slice(_read(RUN), "| `ci-green` |", "\n| ")
-    assert "pull_request.merged == true" in ci_green
+    mp = [c for _, c in _call_spans(ci_green, "merge_pr")]
+    assert mp and all('response="light"' in c for c in mp), (
+        "ci-green row: merge_pr call must request response=\"light\""
+    )
+    merged_sentences = [
+        s for s in re.split(r"(?<=[.?!])\s+", re.sub(r"\s+", " ", ci_green))
+        if "pull_request.merged == true" in s
+    ]
+    assert merged_sentences and any(
+        re.search(r"\bresponse\b|merge_pr", s) for s in merged_sentences
+    ), "ci-green row: pull_request.merged == true is not bound to the merge_pr response"
     failure = _slice(_read(RUN), "## Merge outcomes are classified", "## Hard rules")
     _assert_near(failure, "mergeable_state", "get_pr", window=300)
 
@@ -2362,11 +2394,29 @@ def test_run_fallback_heartbeat_is_one_hour():
     assert re.search(r"\b3600\b", waiting), "Waiting rule names no 3600 s fallback interval"
     _assert_near(waiting, re.compile(r"\b3600\b"), "fallback", window=300)
     _assert_near(waiting, re.compile(r"\b3600\b"), "notification", window=300)
-    assert re.search(r"never[^.]*polls? CI", waiting), "the no-polling rule must remain"
+    para = next((p for p in re.split(r"\n\s*\n", waiting) if re.search(r"\b3600\b", p)), "")
+    flat = re.sub(r"\s+", " ", para)
+    n_pos, h_pos = flat.find("notification"), flat.find("3600")
+    assert 0 <= n_pos < h_pos, (
+        "Waiting rule: the completion notification must be stated (as the wake) before the 3600 s fallback"
+    )
+    hs = [s for s in re.split(r"(?<=[.?!;])\s+", flat) if "3600" in s]
+    assert any(re.search(
+        r"not a poll|no poll|never poll|does not poll|is not polling|without (?:reading|polling|checking)"
+        r"|reads? nothing|no (?:ticket|CI)[^.]{0,20}(?:read|check)", s, re.I) for s in hs), (
+        "Waiting rule: the 3600 s fallback wake must be stated as not a poll (reads nothing)"
+    )
+    assert not any(re.search(r"re-?check|re-?read|until", s, re.I) for s in hs), (
+        "Waiting rule: the 3600 s sentence describes a poll (re-check/re-read/until)"
+    )
     assert not re.search(r"\b1800\b", text), "the improvised 1800 s heartbeat must not appear"
     step2b = _slice(text, "**b. Start the package session", "**c. Read the ticket, react.**")
     assert re.search(r"waiting rule", step2b, re.I), (
         "Step 2b must point at the Waiting rule"
+    )
+    assert not re.search(r"heartbeat|fallback|hourly|interval|wake-?\s?up|ScheduleWakeup|\bevery\b",
+                         step2b, re.I), (
+        "Step 2b must not describe wake scheduling of its own"
     )
     assert not re.search(
         r"\b\d{2,5}\s*(?:s|sec|secs|seconds?|min|minutes?|h|hours?)\b|\b(?:one|an|half an) hour\b",
