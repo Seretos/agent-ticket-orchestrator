@@ -541,9 +541,24 @@ def test_gatekeeper_confirms_a_cleared_package_on_the_ticket():
         "(inside the call or in the body block directly after it)"
     )
     _, _, body = found
-    assert re.search(r"no open questions", body, re.IGNORECASE)
-    assert "Checked" in body
-    assert re.search(r"Moved:.*Planned", body)
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    assert re.search(r"no open questions", body, re.IGNORECASE), (
+        "comment body must state that no open questions were found"
+    )
+
+    def first(pattern):
+        return next((i for i, l in enumerate(lines)
+                     if re.search(pattern, l)), None)
+
+    pkg = first(r"^\W*(Package|Ticket|Epic)\b")
+    chk = first(r"^\W*Checked\b\W*\s*\S{3,}")
+    mov = first(r"^\W*Moved:\s*\W*(Backlog|Question)\W*\s*(→|->)\s*\W*Planned")
+    assert pkg is not None, "body lacks a Package/Ticket/Epic line"
+    assert chk is not None, "body lacks a 'Checked <what>' line naming something"
+    assert mov is not None, "body lacks a 'Moved: <Backlog|Question> -> Planned' line"
+    assert pkg < chk < mov, (
+        "body lines must come in order: Package/..., Checked ..., Moved: ..."
+    )
 
 
 def test_gatekeeper_release_comment_follows_the_planned_move():
@@ -564,6 +579,11 @@ def test_gatekeeper_release_comment_follows_the_planned_move():
     )
     step1 = _slice(text, "## Step 1", "## Step 2")
     assert "adev:event" in step1 and "newer" in step1
+    signal3 = ("at least one comment is **newer** than your latest "
+               "clarification comment — somebody answered.")
+    assert signal3 in re.sub(r"\s+", " ", step1), (
+        "Step 1 ownership signal 3 wording must stay byte-identical"
+    )
     assert not re.search(r"releas\w*[^.]{0,80}(comment|confirmation)|"
                          r"(comment|confirmation)[^.]{0,80}releas",
                          step1, re.IGNORECASE), (
