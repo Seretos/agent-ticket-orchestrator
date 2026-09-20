@@ -2642,7 +2642,10 @@ def test_run_stops_when_merge_is_not_permitted():
                  msg="STOP must be bound to pulls.merge being false")
     assert re.search(r"no (?:column|card)[^.]*(?:worktree)[^.]*(?:session)|nothing (?:was|is|has been) touched",
                      p3, re.I), "Precondition 3 must state that nothing was touched"
-    assert text.index("**Merge permission.**") < text.index("### 0. Pre-flight")
+    # the STOP sentence itself (not the pre-existing heading) precedes Step 0
+    assert "STOP" in p3, "the STOP must sit inside Precondition 3"
+    stop_off = text.index("3. **Merge permission.**") + p3.index("STOP")
+    assert stop_off < text.index("### 0. Pre-flight"), "the STOP must come before Step 0"
     assert not re.search(r"still run|merge not permitted for this project", text, re.I), (
         "the run-anyway-and-park fallback must be deleted"
     )
@@ -2655,12 +2658,17 @@ def test_run_required_columns_drop_review():
     file-wide absence test below can hold at the same time."""
     text = _read(RUN)
     pre = _slice(text, "## Preconditions (per project)", "3. **Merge permission.**")
-    for col in ("Todo", "Doing", "Done", "Question"):
-        assert f"`{col}`" in pre, col
+    item2 = pre[pre.index("2. **Board columns.**"):]
+    m = re.search(r"logical\s+columns\s+((?:`\w+`[,\s]*(?:and\s+)?)+)", item2)
+    assert m, "Precondition 2 must list the required logical columns"
+    assert re.findall(r"`(\w+)`", m.group(1)) == ["Todo", "Doing", "Done", "Question"], m.group(1)
     assert not re.search(r"\bReview\b", pre)
-    assert re.search(r"existing boards?", pre, re.I) and re.search(
-        r"neither reads nor requires|does not read|never reads", pre, re.I
-    ), "Precondition 2 must say existing boards with an extra column stay valid"
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(item2.split()))
+    assert any(
+        re.search(r"existing boards?", sn, re.I)
+        and re.search(r"neither reads nor requires|does not read|never reads", sn, re.I)
+        for sn in sentences
+    ), "one sentence of Precondition 2 must say existing boards with an extra column stay valid and unread"
 
 
 def test_review_column_is_gone_from_the_contract():
@@ -2677,8 +2685,8 @@ def test_agents_md_board_table_and_permissions():
     assert not re.search(r"^\|\s*Review\s*\|", text, re.M)
     bullet = next(l for l in text.splitlines() if "`pulls.merge`" in l and l.startswith("- "))
     assert not re.search(r"still works|optional", bullet, re.I)
-    assert re.search(r"required|refus|STOP|must", bullet, re.I), (
-        "the pulls.merge bullet must name it as required for run"
+    assert re.search(r"required[^.;]{0,40}`run`|`run`[^.;]{0,60}(?:refus|STOP)", bullet, re.I), (
+        "the pulls.merge bullet must name it as required for run (or run refusing without it)"
     )
 
 
@@ -2708,5 +2716,7 @@ def test_non_conflict_merge_failures_end_in_question():
 def test_run_report_vocabulary_drops_review_and_not_permitted():
     text = _read(RUN)
     rep = _slice(text, "### 3. Final report", "## Waiting rule")
-    assert "Done / Question / Skipped" in rep
+    m = re.search(r"result \(([^)]*)\)", rep)
+    assert m, "final report must enumerate the result set in `result (...)`"
+    assert [x.strip() for x in m.group(1).split("/")] == ["Done", "Question", "Skipped"], m.group(1)
     assert "merge-not-permitted" not in rep
