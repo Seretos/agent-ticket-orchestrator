@@ -3068,3 +3068,102 @@ def test_agents_md_records_the_capability_split():
     row = next(l for l in text.splitlines() if l.startswith("| `gatekeeper` |"))
     assert "pipeline-capability" in row
     assert re.search(r"capability[- ]split", row) and re.search(r"capability tickets?", row), row
+
+
+# --- F1: triage's test-evidence rule (agent-ticket-orchestrator#35) ---------
+
+def _triage_step_5() -> str:
+    return _slice(_read(TRIAGE), "\n5. ", "## Output format")
+
+
+def _triage_without_worked_answers() -> str:
+    text = _read(TRIAGE)
+    i = text.find("## Worked answers")
+    j = text.index("## Hard rules")
+    return text if i == -1 else text[:i] + text[j:]
+
+
+def test_triage_states_the_test_evidence_rule_once():
+    text = _read(TRIAGE)
+    step = _triage_step_5()
+    rest = _triage_without_worked_answers()
+    # stated once: the rule's vocabulary lives in step 5 and nowhere else
+    # outside the worked answer (an instance, not a second statement)
+    assert rest.count(step) == 1
+    for tok in ("agents/**", "skills/**", "AGENTS.md", "mechanically"):
+        assert rest.count(tok) == 1 and tok in step, (
+            f"{tok!r} must occur exactly once outside the worked answers, in step 5"
+        )
+    hard = text.split("## Hard rules", 1)[1]
+    assert not re.search(r"\bpin\b|string-presence|test evidence", hard, re.IGNORECASE), (
+        "Hard rules must not restate the test-evidence rule"
+    )
+    sents = _sentences(step)
+    # 1: decidable part -> script -> real tests
+    assert any(
+        re.search(r"decid", s, re.IGNORECASE) and "script" in s.lower()
+        and re.search(r"\btest", s, re.IGNORECASE) and not _NEGATION.search(s)
+        for s in sents
+    ), "one sentence must send the decidable part to a script with tests"
+    # 2: prose files carry no test; verified by real run or reviewer
+    assert any(
+        "skills/**" in s and re.search(r"\bno test\b|carries? no test|without a test", s, re.IGNORECASE)
+        and re.search(r"real run|reviewer", s, re.IGNORECASE)
+        for s in sents
+    ), "one sentence must say prose files carry no test, verified by a real run or the reviewer"
+    # 3: never recommend a string-presence test, exception names a reader
+    # other than the proposed test itself (F1: must not re-license the pin)
+    exc = [
+        s for s in sents
+        if re.search(r"\bnever\b", s, re.IGNORECASE)
+        and re.search(r"string|pin", s, re.IGNORECASE)
+        and re.search(r"\bunless\b", s, re.IGNORECASE) and "mechanically" in s
+    ]
+    assert exc, "one sentence must forbid the string-presence test with an `unless ... mechanically` exception"
+    assert any(
+        re.search(r"besides|other than|apart from|independent", s, re.IGNORECASE)
+        and re.search(r"(test|pin)[^.]*itself|itself[^.]*(test|pin)|proposed test|new test", s, re.IGNORECASE)
+        for s in exc
+    ), "the exception must say the proposed test itself does not count as the mechanical reader"
+
+
+def test_triage_never_invents_a_test_kind():
+    step = _triage_step_5()
+    for kind in ("driving-test", "existing-suite", "ci-evidence", "none"):
+        assert kind in step, f"step 5 must name the lower plugin's kind {kind!r}"
+    sents = _sentences(step)
+    assert any(
+        all(k in s for k in ("driving-test", "existing-suite", "ci-evidence", "none"))
+        and re.search(r"declared|lower plugin", s, re.IGNORECASE)
+        and re.search(r"never invent|only|no other", s, re.IGNORECASE)
+        for s in sents
+    ), "one sentence must name the four declared kinds as the only ones"
+    assert any(
+        re.search(r"prose", s, re.IGNORECASE) and re.search(r"`none`|ci-evidence", s)
+        and "driving-test" in s and _NEGATION.search(s)
+        for s in sents
+    ), "one sentence must tie a prose-only observable to none/ci-evidence and exclude driving-test"
+
+
+def test_triage_ships_the_122_worked_answer():
+    text = _read(TRIAGE)
+    sec = _slice(text, "## Worked answers", "## Hard rules")
+    bullets = [b for b in _blocks(sec) if "#122" in b]
+    assert len(bullets) == 1, "exactly one worked answer for #122"
+    b = bullets[0]
+    assert "skills/process-ticket/SKILL.md" in b
+    assert re.search(r"extract[^.]*script|script[^.]*extract", b, re.IGNORECASE)
+    m = re.search(r"carries? no test|no test", b, re.IGNORECASE)
+    assert m, "the prose half must be declared untested"
+    assert re.search(r"real run|reviewer", b, re.IGNORECASE)
+    end = re.search(r"STATUS: ANSWERED", b)
+    assert end and end.start() > m.start(), "STATUS: ANSWERED must close the answer"
+    for s in _sentences(b):
+        if "driving-test" in s:
+            assert _NEGATION.search(s), f"worked answer must not recommend driving-test: {s!r}"
+
+
+def test_triage_adds_no_new_status():
+    text = _read(TRIAGE)
+    statuses = set(re.findall(r"STATUS: ([A-Z]+)", text))
+    assert statuses == {"ANSWERED", "ESCALATE"}, statuses
