@@ -2633,13 +2633,17 @@ def test_run_stops_when_merge_is_not_permitted():
     text = _read(RUN)
     pre = _slice(text, "## Preconditions (per project)", "## Flow per project")
     p3 = _slice(pre, "3. **Merge permission.**", "4. **Repo root.**")
-    assert re.search(r"read\s+`permissions\.pulls\.merge`", p3), (
-        "Precondition 3 must still read permissions.pulls.merge from the resolved entry"
+    # semantic: the ONE sentence of Precondition 3 that contains STOP must
+    # itself carry the condition (`pulls.merge`, `false`) and the redirect
+    flat = " ".join(p3.split())
+    stop_sents = [sn for sn in re.split(r"(?<=[.!?])\s+", flat) if "STOP" in sn]
+    assert len(stop_sents) == 1, f"Precondition 3 needs exactly one sentence with STOP, got {stop_sents}"
+    stop_sent = stop_sents[0]
+    for needle in ("pulls.merge", "false", "/agent-autonomous-developer:process-ticket"):
+        assert needle in stop_sent, f"the STOP sentence must contain {needle!r}: {stop_sent!r}"
+    assert not re.search(r"still run|still works|carry on|continue", p3, re.I), (
+        "Precondition 3 must contain no continue-anyway wording"
     )
-    _assert_near(p3, "STOP", "/agent-autonomous-developer:process-ticket", window=400,
-                 msg="the pulls.merge STOP must name the single-ticket path")
-    _assert_near(p3, "STOP", "`false`", window=200,
-                 msg="STOP must be bound to pulls.merge being false")
     assert re.search(r"no (?:column|card)[^.]*(?:worktree)[^.]*(?:session)|nothing (?:was|is|has been) touched",
                      p3, re.I), "Precondition 3 must state that nothing was touched"
     # the STOP sentence itself sits in Precondition 3 (slice membership) and
@@ -2654,6 +2658,14 @@ def test_run_stops_when_merge_is_not_permitted():
     assert not re.search(r"still run|merge not permitted for this project", text, re.I), (
         "the run-anyway-and-park fallback must be deleted"
     )
+
+
+def test_run_precondition_3_still_reads_pulls_merge():
+    """Preservation guard (green before and after #31, NOT driving evidence):
+    keeps test_project_resolution_is_lean's slice of the resolved entry valid."""
+    text = _read(RUN)
+    p3 = _slice(text, "3. **Merge permission.**", "4. **Repo root.**")
+    assert re.search(r"read\s+`permissions\.pulls\.merge`", p3)
 
 
 def test_run_required_columns_drop_review():
