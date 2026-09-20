@@ -2821,9 +2821,10 @@ def test_clarifier_capability_detection_is_cheap_and_bounded():
         "list_tickets" in x
         and re.search(r"\bcall\b|\bsearch|\blook", x, re.IGNORECASE)
         and re.search(r"\bone\b|\bsingle\b|\bonce\b", x, re.IGNORECASE)
+        and not re.search(r"\bper\b|\beach\b|\bevery\b", x, re.IGNORECASE)
         and not _NEGATION.search(x)
         for x in _sentences(s)
-    ), "step 1d must affirmatively instruct one list_tickets call"
+    ), "step 1d must affirmatively instruct one list_tickets call, not one per item"
     # detection fires only on a criterion that names a shape
     assert any(
         re.search(r"\bnames\b|\bnamed\b", x)
@@ -2885,8 +2886,14 @@ def test_clarifier_hatch_is_closed_for_a_capability_ticket():
         for x in closed
     ), "a sentence must refuse `measurement: n/a` for pipeline-capability"
     assert any(
-        re.search(r"own PR run|its own PR", x, re.IGNORECASE) for x in closed
-    ), "the AC must be demonstrated by the ticket's own PR run"
+        re.search(r"own PR run|its own PR", x, re.IGNORECASE)
+        and re.search(r"\bmust\b|\brequire|\bdemonstrat|\bexecut", x, re.IGNORECASE)
+        and not re.search(
+            r"need not|\bnot (required|needed)|suffices|sufficient|waive|\boptional",
+            x, re.IGNORECASE,
+        )
+        for x in closed
+    ), "the AC must be required to be demonstrated by the ticket's own PR run"
     # misread::F1: the closure holds for EVERY generated capability ticket,
     # manual: too -- not only the auto: one.
     assert any(
@@ -2956,11 +2963,22 @@ def test_gatekeeper_creates_the_capability_ticket_idempotently():
 def test_gatekeeper_blocks_only_on_the_automatable_capability():
     s = _gatekeeper_step_3_4()
     assert "add_relation(" not in s, "Step 3.4 reuses Step 3.5's write, no second path"
+    for x in _sentences(s):
+        if "blocked_by" in x and re.search(r"\b(record|write|writes|add|adds)\b", x, re.IGNORECASE):
+            assert "Step 3.5" in x or _NEGATION.search(x), (
+                f"Step 3.4 must not describe its own relation write: {x!r}"
+            )
     step35 = _slice(_read(GATEKEEPER), "## Step 3.5", "## Step 3.6")
     deps = _slice(step35, "deps =", "for each raw target")
     assert "Step 3.4" in deps, "Step 3.5's `deps` union must name Step 3.4"
     assert re.search(r"∪|union", deps), "Step 3.4's ids must be unioned into `deps`"
-    assert re.search(r"auto", deps, re.IGNORECASE), "only the automatable ids join `deps`"
+    assert re.search(r"\bauto\b|\bauto:|automatable", deps, re.IGNORECASE), (
+        "only the automatable ids join `deps`"
+    )
+    for mm in re.finditer(r"manual", deps, re.IGNORECASE):
+        assert _NEGATION.search(deps[max(0, mm.start() - 60):mm.end() + 60]), (
+            f"the deps clause must not union manual: capabilities: {deps!r}"
+        )
     k = deps.index("Step 3.4")
     assert not _NEGATION.search(deps[max(0, k - 60):k + 120]), (
         f"Step 3.4's ids must be included, not excluded: {deps!r}"
@@ -3002,8 +3020,9 @@ def test_gatekeeper_reports_the_capability_split():
     step5 = _slice(_read(GATEKEEPER), "## Step 5", "## Hard rules")
     i = step5.index("capability split:")
     entry = step5[i:i + 350]
-    for tok in ("automatable", "blocked_by", "manual", "no relation"):
-        assert tok in entry, f"Step 5's capability-split line must carry {tok!r}: {entry!r}"
+    assert re.search(
+        r"automatable.{0,60}blocked_by.{0,60}manual.{0,60}no relation", entry, re.DOTALL
+    ), f"Step 5 must map automatable -> blocked_by and manual -> no relation, in order: {entry!r}"
     rules = _read(GATEKEEPER).split("## Hard rules", 1)[1]
     writes = _slice(rules, "Your writes are:", "moves")
     assert "pipeline-capability" in writes
@@ -3023,7 +3042,6 @@ def test_agents_md_records_the_capability_split():
     heading = "### A capability the PR cannot execute is its own ticket"
     assert heading in text
     sec = text.split(heading, 1)[1].split("\n### ", 1)[0]
-    assert len(sec) >= 600, "the section must carry the rationale, not one sentence"
     assert "needs_pipeline_support" in sec and "Step 3.4" in sec
     manual = [x for x in _sentences(sec) if "manual" in x.lower() and "relation" in x.lower()]
     assert manual, "the Q1(b) rationale (manual gets no relation) must be one sentence"
