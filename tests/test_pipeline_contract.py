@@ -2642,10 +2642,15 @@ def test_run_stops_when_merge_is_not_permitted():
                  msg="STOP must be bound to pulls.merge being false")
     assert re.search(r"no (?:column|card)[^.]*(?:worktree)[^.]*(?:session)|nothing (?:was|is|has been) touched",
                      p3, re.I), "Precondition 3 must state that nothing was touched"
-    # the STOP sentence itself (not the pre-existing heading) precedes Step 0
-    assert "STOP" in p3, "the STOP must sit inside Precondition 3"
+    # the STOP sentence itself sits in Precondition 3 (slice membership) and
+    # precedes the first board-write / worktree / session / enumeration call
+    # anywhere in the file -- a real, falsifiable ordering, not a layout fact
     stop_off = text.index("3. **Merge permission.**") + p3.index("STOP")
-    assert stop_off < text.index("### 0. Pre-flight"), "the STOP must come before Step 0"
+    first_action = min(
+        text.index(tok)
+        for tok in ("worktree_create", "update_ticket", "start-package-session.sh", "list_tickets(")
+    )
+    assert stop_off < first_action, "the STOP must precede every board write, worktree and session call"
     assert not re.search(r"still run|merge not permitted for this project", text, re.I), (
         "the run-anyway-and-park fallback must be deleted"
     )
@@ -2677,17 +2682,24 @@ def test_review_column_is_gone_from_the_contract():
     for path in (RUN, AGENTS_MD, README, DESCRIPTION):
         m = re.search(r"\bReview\b", _read(path))
         assert m is None, f"{path.name}: 'Review' survives at offset {m.start()}"
-    assert "review-verdict" in _read(AGENTS_MD), "sweep over-reached"
+    # the lower-case review vocabulary survives where the comment-event
+    # contract describes the lower plugin's events (bound to that paragraph)
+    paras = re.split(r"\n\s*\n", _read(AGENTS_MD))
+    assert any(
+        "`review-verdict`" in para and "Events, exhaustive" in para and "`rounds`" in para
+        for para in paras
+    ), "sweep over-reached: review-verdict gone from the event-vocabulary paragraph"
 
 
 def test_agents_md_board_table_and_permissions():
     text = _read(AGENTS_MD)
     assert not re.search(r"^\|\s*Review\s*\|", text, re.M)
     bullet = next(l for l in text.splitlines() if "`pulls.merge`" in l and l.startswith("- "))
-    assert not re.search(r"still works|optional", bullet, re.I)
-    assert re.search(r"required[^.;]{0,40}`run`|`run`[^.;]{0,60}(?:refus|STOP)", bullet, re.I), (
-        "the pulls.merge bullet must name it as required for run (or run refusing without it)"
-    )
+    assert not re.search(r"still works|optional|not required|not by `run`", bullet, re.I)
+    assert re.search(
+        r"`run`[^.;]{0,60}(?:requires?|needs?|refus\w*|STOP\w*)|(?:required|needed)\s+by\s+`run`",
+        bullet, re.I,
+    ), "the pulls.merge bullet must make `run` the subject that requires it (or refuses without it)"
 
 
 def test_non_conflict_merge_failures_end_in_question():
