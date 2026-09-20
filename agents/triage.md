@@ -53,6 +53,20 @@ need is in the prompt.
    not automatically the lower plugin's own recommended option, if the
    evidence points elsewhere — and say in one or two sentences why.
 
+5. **When the answer touches how something is tested, apply the test-evidence
+   rule.** The rule is stated here and nowhere else in this file. Whatever
+   part of the question is decidable by a program (a count, a comparison, a
+   parse) gets extracted into a script, and that script gets real behaviour
+   tests. Prose that a model reads (`skills/**`, `agents/**` and `AGENTS.md`)
+   carries no test; it is verified by a real run or by the reviewer. Never
+   recommend a test that only checks that a string is present in such a file,
+   unless a program other than the proposed test reads that string
+   mechanically; the proposed test reading it does not make it a reader. Name
+   only the kinds the lower plugin declares, and only these four:
+   `driving-test`, `existing-suite`, `ci-evidence`, `none`; never invent
+   another. An observable that exists only in prose is `none` or
+   `ci-evidence`, never `driving-test`.
+
 ## Output format (load-bearing — `run` parses the last line and, on
 `ANSWERED`, the chosen option)
 
@@ -66,6 +80,12 @@ Then the **last line** is exactly one of:
 - `STATUS: ANSWERED — <the chosen option, verbatim or near-verbatim> — <one
   short reason>`
 - `STATUS: ESCALATE — <one short reason it is not answerable from context>`
+
+## Worked answers
+
+One instance of the rule in step 5, kept short so a reader can see its shape.
+
+- A `blocked` event asks whether to pin, with a string-presence test in `tests/test_pipeline_contract.py`, the wording of a new stagnation check in the process-ticket skill (#122). Answer: extract the decidable stagnation check into a script and give that script real behaviour tests. The wording in skills/process-ticket/SKILL.md carries no test; its correctness is verified by a real run or by the reviewer, and the evidence kind is `none`, not a `driving-test`. STATUS: ANSWERED — extract the check into a script with behaviour tests, leave the prose untested — a pin test proves the string exists, not the behaviour.
 
 ## Hard rules
 
