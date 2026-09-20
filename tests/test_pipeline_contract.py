@@ -2816,12 +2816,21 @@ def test_clarifier_capability_detection_is_cheap_and_bounded():
     assert s.count("list_tickets") == 1, (
         f"step 1d must mention list_tickets exactly once, got {s.count('list_tickets')}"
     )
+    # ... and that one mention must instruct the call, not forbid it
+    assert any(
+        "list_tickets" in x
+        and re.search(r"\bcall\b|\bsearch|\blook", x, re.IGNORECASE)
+        and re.search(r"\bone\b|\bsingle\b|\bonce\b", x, re.IGNORECASE)
+        and not _NEGATION.search(x)
+        for x in _sentences(s)
+    ), "step 1d must affirmatively instruct one list_tickets call"
     # detection fires only on a criterion that names a shape
     assert any(
         re.search(r"\bnames\b|\bnamed\b", x)
         and re.search(r"another OS|shell|artifact|external service|person", x, re.IGNORECASE)
+        and not _NEGATION.search(x)
         for x in _sentences(s)
-    ), "a sentence must tie `names` to the flaggable shapes"
+    ), "an affirmative (non-negated) sentence must tie `names` to the flaggable shapes"
     # falls back to none when no shape is named
     assert any(
         "needs_pipeline_support" in x and "none" in x
@@ -2837,12 +2846,25 @@ def test_clarifier_capability_detection_is_cheap_and_bounded():
             r"\b(never|not)\b[^.]{0,80}depends_on|depends_on[^.]{0,80}\b(never|not)\b",
             x, re.IGNORECASE,
         ), f"a manual: capability must not be routed into depends_on: {x!r}"
-    auto = [x for x in _sentences(s) if "auto" in x.lower() and "depends_on" in x]
-    assert auto, "an existing automatable capability ticket must route to depends_on"
+    auto = [
+        x for x in _sentences(s)
+        if "auto" in x.lower() and "depends_on" in x and not _NEGATION.search(x)
+    ]
+    assert auto, (
+        "an existing automatable capability ticket must route to depends_on "
+        "in an affirmative (non-negated) sentence"
+    )
     # the "Do not propose new tickets" rule must allow this report
     rules = _slice(_read(CLARIFIER), "## Hard rules", "\n- **Never read outside")
-    assert "needs_pipeline_support" in rules, (
-        "the 'Do not propose new tickets' rule must be amended to allow this report"
+    amended = [
+        x for x in _sentences(rules)
+        if "needs_pipeline_support" in x
+        and re.search(r"\bmay\b|\ballow|\bexcept|\breport|\bemit", x, re.IGNORECASE)
+        and not re.search(r"\bnever\b|\bnot emit|\bno exception", x, re.IGNORECASE)
+    ]
+    assert amended, (
+        "the 'Do not propose new tickets' rule must be amended to permit/report "
+        "needs_pipeline_support, with no `never` negating it"
     )
 
 
@@ -2867,15 +2889,21 @@ def test_clarifier_hatch_is_closed_for_a_capability_ticket():
     ), "the AC must be demonstrated by the ticket's own PR run"
     # misread::F1: the closure holds for EVERY generated capability ticket,
     # manual: too -- not only the auto: one.
-    _assert_near(
-        hatch, "pipeline-capability", "manual", window=500,
-        msg="the hatch closure must also cover the manual: capability ticket",
-    )
+    assert any(
+        "manual" in x and "pipeline-capability" in x
+        and re.search(refusal, x, re.IGNORECASE)
+        and not re.search(r"unaffected|no such label|does not apply|not apply", x, re.IGNORECASE)
+        for x in _sentences(hatch)
+    ), "one sentence must extend the hatch closure to the manual: capability ticket"
     # misread::F3: the second hatch location -- the frame block's own
     # `symptom:` line -- must state the closure too.
     out = _slice(_read(CLARIFIER), "## Output format", "### Frame")
-    _assert_near(out, "symptom:", "pipeline-capability", window=700,
-                 msg="the frame block's symptom line must also state the closure")
+    assert any(
+        "symptom" in x and "pipeline-capability" in x
+        and re.search(refusal, x, re.IGNORECASE)
+        and not re.search(r"unaffected|does not apply|not apply|\bsee\b", x, re.IGNORECASE)
+        for x in _sentences(out)
+    ), "the frame block's symptom line must itself state the closure in one sentence"
 
 
 def test_clarifier_ships_the_capability_worked_frames():
@@ -2951,6 +2979,11 @@ def test_gatekeeper_capability_split_reuses_the_recut_mechanism():
     s = _gatekeeper_step_3_4()
     assert "recut" in s and "Step 3.7" in s
     assert "Additional requirement" in s or "Non-goal" in s
+    assert any(
+        "recut" in x and re.search(r"\bto\b[^.]*\bslice\b", x)
+        and not _NEGATION.search(x)
+        for x in _sentences(s)
+    ), "Step 3.4 must have an affirmative sentence emitting a recut {from,to,slice} entry"
     sec = _slice(_read(GATEKEEPER), "## Step 3.7", "## Step 4")
     first_para = sec.split("\n\n", 1)[0]
     tie = [
@@ -2980,6 +3013,7 @@ def test_gatekeeper_reports_the_capability_split():
     assert bullets, "a Hard rule must cover the capability split"
     assert any(
         "manual" in b and "blocked_by" in b and not re.search(r"out of scope|never create", b)
+        and re.search(r"\bno relation\b|writes no|no `?blocked_by`?|never[^.]*relation", b, re.IGNORECASE)
         for b in bullets
     ), "the Hard rule must say only the automatable capability blocks (manual writes no blocked_by)"
 
