@@ -3094,6 +3094,14 @@ _NEG_ALLOWED = re.compile(
 )
 
 
+# "extract/move/put ... into a script" as an imperative (not "did not extract")
+_EXTRACT_IMPERATIVE = re.compile(
+    r"\b(?:extract|move|put|split)\w*\b[^.]{0,160}?\b(?:into|to|out to)\b[^.]{0,40}?\bscripts?\b",
+    re.IGNORECASE,
+)
+_REJECTED = re.compile(r"\breject|\binstead of\b|\brather than\b|n't\b|\bfailed\b", re.IGNORECASE)
+
+
 def test_triage_states_the_test_evidence_rule_once():
     text = _read(TRIAGE)
     step = _triage_step_5()
@@ -3111,17 +3119,18 @@ def test_triage_states_the_test_evidence_rule_once():
     sents = _sentences(step)
     # 1: decidable part -> script -> real tests
     assert any(
-        re.search(r"decid", s, re.IGNORECASE) and "script" in s.lower()
-        and re.search(r"\btest", s, re.IGNORECASE) and not _NEGATION.search(s)
+        _EXTRACT_IMPERATIVE.search(s) and re.search(r"decid", s, re.IGNORECASE)
+        and re.search(r"\btests?\b", s, re.IGNORECASE) and not _NEGATION.search(s)
         for s in sents
-    ), "one sentence must send the decidable part to a script with tests"
+    ), "one non-negated sentence must say to extract the decidable part into a script, with a test"
     # 2: prose files carry no test; verified by real run or reviewer
     assert any(
         all(g in s for g in ("skills/**", "agents/**", "AGENTS.md"))
         and re.search(r"\bno test\b|carries? no test|without a test", s, re.IGNORECASE)
         and re.search(r"real run|reviewer", s, re.IGNORECASE)
+        and not _NEGATION.search(s)
         for s in sents
-    ), "one sentence must tie all three prose globs to: no test, verified by a real run or the reviewer"
+    ), "one non-negated sentence must tie all three prose globs to: no test, verified by a real run or the reviewer"
     # 3: never recommend a string-presence test, exception names a reader
     # other than the proposed test itself (F1: must not re-license the pin)
     exc = [
@@ -3133,18 +3142,20 @@ def test_triage_states_the_test_evidence_rule_once():
     assert exc, "one sentence must forbid the string-presence test with an `unless ... mechanically` exception"
     assert any(
         re.search(r"besides|other than|apart from|independent", s, re.IGNORECASE)
-        and re.search(r"(test|pin)[^.]*itself|itself[^.]*(test|pin)|proposed test|new test", s, re.IGNORECASE)
         for s in exc
-    ), "the exception must say the proposed test itself does not count as the mechanical reader"
+    ), "the exception must name a mechanical reader other than a human/model (besides/other than/...)"
 
 
 def test_triage_never_invents_a_test_kind():
     step = _triage_step_5()
-    for kind in ("driving-test", "existing-suite", "ci-evidence", "none"):
-        assert kind in step, f"step 5 must name the lower plugin's kind {kind!r}"
+    def has(k, s):
+        return re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", s)
+    kinds = ("driving-test", "existing-suite", "ci-evidence", "none")
+    for kind in kinds:
+        assert has(kind, step), f"step 5 must name the lower plugin's kind {kind!r} as a whole word"
     sents = _sentences(step)
     assert any(
-        all(k in s for k in ("driving-test", "existing-suite", "ci-evidence", "none"))
+        all(has(k, s) for k in kinds)
         and re.search(r"declared|lower plugin", s, re.IGNORECASE)
         and re.search(r"never invent|only|no other", s, re.IGNORECASE)
         for s in sents
@@ -3162,8 +3173,17 @@ def test_triage_ships_the_122_worked_answer():
     bullets = [b for b in _blocks(sec) if "#122" in b]
     assert len(bullets) == 1, "exactly one worked answer for #122"
     b = bullets[0]
-    assert "skills/process-ticket/SKILL.md" in b
-    assert re.search(r"extract[^.]*script|script[^.]*extract", b, re.IGNORECASE)
+    path = "skills/process-ticket/SKILL.md"
+    assert path in b
+    # the recommendation itself: a non-negated, non-rejected imperative sentence,
+    # with the path bound to it (or to the untested-prose statement)
+    rec = [x for x in _sentences(b) if _EXTRACT_IMPERATIVE.search(x)
+           and not _NEGATION.search(x) and not _REJECTED.search(x)]
+    assert rec, "the worked answer must recommend extracting the decidable half into a script"
+    assert any(path in x for x in rec) or any(
+        path in x and re.search(r"carries? no test|no test", x, re.IGNORECASE)
+        for x in _sentences(b)
+    ), "the path must be bound to the extraction recommendation or the untested-prose statement"
     m = re.search(r"carries? no test|no test", b, re.IGNORECASE)
     assert m, "the prose half must be declared untested"
     assert any(
