@@ -2744,3 +2744,187 @@ def test_run_report_vocabulary_drops_review_and_not_permitted():
     assert m, "final report must enumerate the result set in `result (...)`"
     assert [x.strip() for x in m.group(1).split("/")] == ["Done", "Question", "Skipped"], m.group(1)
     assert "merge-not-permitted" not in rep
+
+
+# --- E1: capability splits (agent-ticket-orchestrator#33) ------------------
+# An acceptance criterion that needs a pipeline capability the package's own PR
+# run cannot execute is split into its own ticket. The clarifier REPORTS it
+# (frame key `needs_pipeline_support`), the gatekeeper WRITES it (Step 3.4),
+# `run` is unchanged. Only the automatable half blocks the package (owner's
+# Q1 answer, option b). Prose executed by an LLM: these assertions pin
+# structure and bind outcomes to their triggers by proximity/sentence scope;
+# they do not simulate the clarifier's judgement.
+
+def _clarifier_step_1d() -> str:
+    return _slice(_read(CLARIFIER), "**1d.", "\n2. **Read the code")
+
+
+def _clarifier_hatch_section() -> str:
+    return _slice(
+        _read(CLARIFIER), "## When STATUS: CLEAR is not available", "## Worked frames"
+    )
+
+
+def _gatekeeper_step_3_4() -> str:
+    return _slice(_read(GATEKEEPER), "## Step 3.4", "## Step 3.5")
+
+
+def _sentences(text: str) -> list:
+    return re.split(r"(?<=[.!?])\s+|\n\s*\n", text)
+
+
+def test_clarifier_frame_block_carries_needs_pipeline_support():
+    text = _read(CLARIFIER)
+    block = _slice(text, "<!-- clarifier:frame v1", "-->")
+    line = next(
+        (l for l in block.splitlines() if l.startswith("needs_pipeline_support:")), None
+    )
+    assert line, "frame block must carry a `needs_pipeline_support:` line"
+    for token in ("none", "auto:", "manual:"):
+        assert token in line, f"{token!r} missing from {line!r}"
+    out = _slice(text, "## Output format", "## When STATUS: CLEAR is not available")
+    _assert_near(
+        out, "needs_pipeline_support", "repeatable", window=600,
+        msg="the key must be documented as repeatable near its definition",
+    )
+    assert re.search(r"both\s+statuses|CLEAR\s+and\s+NEEDS_INPUT", out), (
+        "the key must be documented as emitted on both statuses"
+    )
+
+
+def test_clarifier_capability_detection_is_cheap_and_bounded():
+    s = _clarifier_step_1d()
+    assert ".github/workflows" in s
+    assert "runs-on" in s and "matrix" in s, "step 1d must read runs-on and the matrix"
+    for shape in ("another OS", "shell", "artifact", "external service", "person"):
+        assert shape.lower() in s.lower(), f"flaggable shape {shape!r} missing"
+    _assert_near(s, "list_tickets", "one", window=120,
+                 msg="the capability look-up is capped at one list_tickets call")
+    assert re.search(r"\bnames\b|\bnamed\b", s), "detection fires only on a criterion that names a shape"
+    assert "none" in s, "falls back to none when no shape is named"
+    # misread::F2: an existing ticket routes to depends_on ONLY for the
+    # automatable kind; a manual: capability must never become a blocker.
+    manual = [x for x in _sentences(s) if "manual" in x.lower() and "depends_on" in x]
+    assert manual, "step 1d must say what happens to an existing manual: capability ticket"
+    for x in manual:
+        assert re.search(r"\bnever\b|\bnot\b|\bno\b", x, re.IGNORECASE), (
+            f"a manual: capability must not be routed into depends_on: {x!r}"
+        )
+    auto = [x for x in _sentences(s) if "auto" in x.lower() and "depends_on" in x]
+    assert auto, "an existing automatable capability ticket must route to depends_on"
+    # the "Do not propose new tickets" rule must allow this report
+    rules = _slice(_read(CLARIFIER), "## Hard rules", "\n- **Never read outside")
+    assert "needs_pipeline_support" in rules, (
+        "the 'Do not propose new tickets' rule must be amended to allow this report"
+    )
+
+
+def test_clarifier_hatch_is_closed_for_a_capability_ticket():
+    hatch = _clarifier_hatch_section()
+    assert "pipeline-capability" in hatch
+    closed = [x for x in _sentences(hatch) if "pipeline-capability" in x]
+    joined = " ".join(closed)
+    assert re.search(r"none:ci|none:test|`none:", joined), joined
+    assert re.search(r"closed|never|not legal|refus", joined, re.IGNORECASE), joined
+    assert not re.search(r"stays open|remains open|\bis open\b", joined, re.IGNORECASE), joined
+    assert re.search(r"own PR run|its own PR", joined, re.IGNORECASE), (
+        "the AC must be demonstrated by the ticket's own PR run"
+    )
+    # misread::F1: the closure holds for EVERY generated capability ticket,
+    # manual: too -- not only the auto: one.
+    _assert_near(
+        hatch, "pipeline-capability", "manual", window=500,
+        msg="the hatch closure must also cover the manual: capability ticket",
+    )
+    # misread::F3: the second hatch location -- the frame block's own
+    # `symptom:` line -- must state the closure too.
+    out = _slice(_read(CLARIFIER), "## Output format", "### Frame")
+    _assert_near(out, "symptom:", "pipeline-capability", window=700,
+                 msg="the frame block's symptom line must also state the closure")
+
+
+def test_clarifier_ships_the_capability_worked_frames():
+    text = _slice(_read(CLARIFIER), "## Worked frames", "## Hard rules")
+    i = text.index("#347")
+    j = text.find("\n- **", i)
+    pos = text[i:j if j != -1 else len(text)]
+    assert "auto:" in pos and "manual:" in pos, "the #347 example carries both kinds"
+    assert "STATUS: CLEAR" in pos
+    assert "needs_pipeline_support" in pos
+    neg = [b for b in text.split("\n- **") if "needs_pipeline_support: none" in b]
+    assert neg, "a negative worked frame must resolve to `needs_pipeline_support: none`"
+
+
+def test_gatekeeper_creates_the_capability_ticket_idempotently():
+    s = _gatekeeper_step_3_4()
+    lc = _call_spans(s, "list_comments")
+    ct = _call_spans(s, "create_ticket")
+    assert lc and ct, "Step 3.4 must read comments and create a ticket"
+    assert lc[0][0] < ct[0][0], "the idempotency read must precede create_ticket"
+    m = re.search(r"body_max_chars\s*=\s*(\d+)", lc[0][1])
+    assert m and int(m.group(1)) <= 600, lc[0][1]
+    assert "## Capability split (gatekeeper)" in s
+    assert "gatekeeper:capability v1" in s and "capability_ticket:" in s
+    for c in ct:
+        assert 'template="task"' in c[1], c[1]
+        # misread::F1: every generated capability ticket carries the label
+        # the hatch closure reads.
+        assert "pipeline-capability" in c[1], f"unlabelled capability ticket: {c[1]}"
+        assert "custom_fields" not in c[1], "must land in Backlog"
+    assert "### Goal" in s and "### Acceptance" in s
+    assert "create_label" in s and "list_labels" in s
+
+
+def test_gatekeeper_blocks_only_on_the_automatable_capability():
+    s = _gatekeeper_step_3_4()
+    assert "add_relation(" not in s, "Step 3.4 reuses Step 3.5's write, no second path"
+    step35 = _slice(_read(GATEKEEPER), "## Step 3.5", "## Step 3.6")
+    deps_lines = [l for l in step35.splitlines() if "deps" in l and "Step 3.4" in l]
+    assert deps_lines, "Step 3.5's `deps` union must name Step 3.4"
+    manual = [x for x in _sentences(s) if "manual:" in x and "relation" in x]
+    assert manual, "Step 3.4 must state that manual: writes no relation"
+    for x in manual:
+        assert re.search(r"\bno relation\b|\bnever\b[^.]*relation|writes no", x, re.IGNORECASE), x
+        assert not re.search(r"\bno\b[^.]{0,40}\bnot\b|\bnot\b[^.]{0,40}\bno\b", x), (
+            f"double negation: {x!r}"
+        )
+        assert not re.search(r"\bmay write\b", x), x
+
+
+def test_gatekeeper_capability_split_reuses_the_recut_mechanism():
+    s = _gatekeeper_step_3_4()
+    assert "recut" in s and "Step 3.7" in s
+    assert "Additional requirement" in s or "Non-goal" in s
+    sec = _slice(_read(GATEKEEPER), "## Step 3.7", "## Step 4")
+    first_para = sec.split("\n\n", 1)[0]
+    assert "Step 3.4" in first_para, (
+        "Step 3.7's admission must name the Step 3.4 recut entry"
+    )
+    _assert_near(first_para, "Step 3.4", "created", window=200,
+                 msg="admission covers a `to` this pass created")
+
+
+def test_gatekeeper_reports_the_capability_split():
+    step5 = _slice(_read(GATEKEEPER), "## Step 5", "## Hard rules")
+    assert "capability split:" in step5
+    assert "automatable" in step5 and "manual" in step5
+    rules = _read(GATEKEEPER).split("## Hard rules", 1)[1]
+    writes = _slice(rules, "Your writes are:", "moves")
+    assert "pipeline-capability" in writes
+    assert re.search(r"capability[- ]split comments", writes)
+    assert any(
+        "capability" in l.lower() for l in rules.splitlines() if l.startswith("- **")
+    ), "a Hard rule must cover the capability split"
+
+
+def test_agents_md_records_the_capability_split():
+    text = _read(AGENTS_MD)
+    heading = "### A capability the PR cannot execute is its own ticket"
+    assert heading in text
+    sec = text.split(heading, 1)[1].split("\n### ", 1)[0]
+    assert "needs_pipeline_support" in sec and "Step 3.4" in sec
+    _assert_near(sec, "manual", "no relation", window=300,
+                 msg="the Q1(b) rationale: manual gets no relation")
+    assert "pipeline-capability" in sec
+    row = next(l for l in text.splitlines() if l.startswith("| `gatekeeper` |"))
+    assert "pipeline-capability" in row
