@@ -284,7 +284,8 @@ value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
 `ac`, `premise` and `depends_on` for every package, `chain` and `reframe` for
 Step 3.6, and `ac` and `premise` again for Step 4's frame comment. `premise`
 may appear more than once — collect every occurrence, in the order they
-appear.
+appear. `needs_pipeline_support` is read the same way for Step 3.4: every
+occurrence, `none` when absent.
 
 **Render the premises line, once, here — Step 3.6 and Step 4 both reuse this
 exact rendering as defined in Step 3, rather than each inventing their own.**
@@ -302,14 +303,82 @@ If the block is missing or unparseable, record `frame block missing` in
 Step 5's report and continue on the `STATUS:` line alone — never abort a
 pass for a malformed block.
 
+## Step 3.4 — split off a capability the PR cannot execute
+
+Runs per package, immediately after its clarifier call returns and before
+Step 3.5, **on both statuses** — once per `needs_pipeline_support` value the
+frame block carries other than `none`. The clarifier only reports (`auto:<capability>`
+when an automated job could ever run the check, `manual:<check>` when only a
+person can); this step writes. A capability that already has an open ticket
+never reaches it — the clarifier reports that one as `depends_on` with
+`needs_pipeline_support: none`.
+
+1. **Idempotency first.** `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=400)`
+   — a `## Capability split (gatekeeper)` comment whose `gatekeeper:capability`
+   block names this capability means an earlier pass already split it: create
+   nothing. For `auto:`, its `capability_ticket:` id still joins `deps` below.
+2. **Label.** `list_labels(project_id)`, then `create_label(project_id,
+   "pipeline-capability")` if absent — GitHub 404s on an unknown label at
+   `create_ticket` time.
+3. **Create the ticket.** One call per capability, no `custom_fields`, so it
+   lands in Backlog and goes through a normal pass later. The body is exactly
+   the two headings `templates/ISSUE_TEMPLATE/task.yml` requires:
+
+   ```
+   create_ticket(project_id, title=<the capability>, labels=["pipeline-capability"], template="task", body="### Goal
+   <the capability, and why package #<package> needs it>
+
+   ### Acceptance
+   <the acceptance sentence below>")
+   ```
+
+   The label goes on the `manual:` ticket too — the clarifier's closed hatch
+   reads it (`agents/clarifier.md`). Acceptance sentence for `auto:`: "The
+   capability executes in this ticket's own PR run: <criterion>. A run in which
+   it did not execute does not satisfy this — its presence in a workflow file,
+   or a green run that skipped it, is not evidence." For `manual:`: "A person
+   performs <check> and records the result here; nothing waits on it."
+4. **Blocking.** `auto:` — add the new ticket id to this package's `deps`
+   (Step 3.5's union), which writes the `blocked_by` and read-back through
+   Step 3.5's own loop. `manual:` writes no relation, ever, and blocks nothing:
+   the package ships the same night, and a person picks the check up from
+   its own ticket.
+5. **Move the criterion.** Emit a `recut` entry `{from: <package>, to: <new
+   ticket>, slice: <the criterion>, why: <the capability lies beyond
+   this package's PR run>}` for Step 3.7. It posts the "Additional
+   requirement" line on the new ticket and the "Non-goal" line on the package;
+   on the new ticket the frame comment's `Acceptance criterion:` line is the
+   acceptance sentence above, and the closing sentence is Step 3.7's third
+   variant, because that ticket has no frame block of its own.
+6. **Record it.** One comment on the package:
+
+   ```
+   add_comment(project_id, ticket_id=<package>, body="## Capability split (gatekeeper)
+
+   Capability: <the capability>
+   Ticket: #<new ticket>
+   Automatable: yes — #<package> is blocked_by #<new ticket> | no — a person performs it; nothing waits on it
+
+   <!-- gatekeeper:capability v1
+   capability_ticket: #<new ticket>
+   automatable: yes | no
+   -->
+
+   Object by replying on this ticket.")
+   ```
+
+   The MCP prepends `#ai-generated`; do not add it yourself. The block is read
+   by the same dumb `key: value` reader as `adev:event`.
+
 ## Step 3.5 — link dependencies
 
-Runs per package, immediately after its clarifier call returns, **on both
+Runs per package, immediately after its clarifier call returns (and Step 3.4), **on both
 statuses** (CLEAR and NEEDS_INPUT) — a dependency is a fact, not a decision,
 and a package that goes to Question does not make it false.
 
 ```
 deps = bundler's depends_on for this package  ∪  clarifier frame's depends_on
+       ∪  the automatable capability ticket ids of Step 3.4
 for each raw target #t:
   1. Lift. #t in the Step 2 package map -> target = map[#t]
      else list_hierarchy(project_id, #t); parent non-null -> walk up
@@ -437,7 +506,7 @@ label and post a comment — exactly the same shape as
 the clarifier's read-only output into board state.
 
 ## Step 3.7 — apply a recut
-Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it.
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it. The `recut` entry Step 3.4 emits is admitted as well, its `to` being the capability ticket that step created this pass.
 
 For each `recut` entry, on **both** endpoints, in this order:
 
@@ -570,7 +639,7 @@ which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
-2); `recut applied: #<from> → #<to>` (Step 3.7); `unexplained relation gap:
+2); `recut applied: #<from> → #<to>` (Step 3.7); `capability split: #<pkg> → #<new> (automatable — blocked_by written | manual — no relation)` (Step 3.4); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5).
 
 For a returning candidate whose verdict changed from `previous_cut`, report
@@ -601,12 +670,14 @@ are all in the Question column — then run
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  `blocked_by`/`relates_to` relations, labels (including `regression-chain`),
-  clarification comments, dependency comments, frame comments,
-  regression-chain comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
+  capability tickets, `blocked_by`/`relates_to` relations, labels (including
+  `regression-chain` and `pipeline-capability`), clarification comments,
+  dependency comments, frame comments, regression-chain comments,
+  capability-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body.
+- **Only the automatable capability blocks.** A capability split (Step 3.4) writes `blocked_by` for the `auto:` ticket alone; `manual:` writes no relation and blocks nothing, and the split is written once.
 - **Bundle before clarify**, always.
 - **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
   package out of Planned (Step 3.5).
