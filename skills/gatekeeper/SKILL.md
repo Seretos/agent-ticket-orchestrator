@@ -222,6 +222,59 @@ same ticket twice. (Its body still describes both halves, so the bundler will
 report both again; the `Non-goal (re-cut to #<n>)` line is what took the
 prose half out.)
 
+### The prose lane is optional — check that this project has it
+
+`agent-autonomous-prompt-engineer` is not a dependency of this plugin: the
+developer is needed in every project, the prompt engineer only where
+model-executed prose is actually shipped. So before any ticket is routed to
+it, check — **once per pass, and only when at least one ticket came back
+`prose` or `mixed`**:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/prose-lane-available.py" "<local_path>"
+```
+
+stdout `prose_lane: available | unavailable` plus the `source:` settings file
+that decided; `exit 0` available, `exit 2` unavailable. It reads the settings
+files a package session will actually see; do not substitute your own view
+of which skills this session has loaded.
+
+**Available** → carry on below. **Unavailable** → every `prose` and every
+`mixed` ticket of this pass is a question for a human, because both answers
+cost something and neither is yours to pick: installing a plugin into the
+project, or knowingly sending prose through the developer, whose critic gates
+are known to deadlock on it. For each such ticket — no split, no
+`lane:prose` label, no clarifier dispatch this pass — post
+
+```
+## Clarification needed (gatekeeper)
+
+### Q1
+**About:** this ticket changes files a model executes (skills, agents,
+prompts), and this project does not have the plugin that builds and verifies
+those.
+
+<the classifier's output, verbatim>
+
+- **Enable `agent-autonomous-prompt-engineer` in this project's
+  `.claude/settings.json`, then reply here** *(recommended)* — the ticket is
+  routed (and, when it also changes code, split) on the next pass.
+- **Reply "code lane"** — the ticket runs through `agent-autonomous-developer`
+  as it is, unsplit; expect its test gates to object to prose and the package
+  to possibly come back as a Question.
+```
+
+and move it to Question (Step 3's calls). A bundle containing such a ticket
+is rejected first, as below, so the other members are not held up.
+
+**When such a card returns answered:** run the script again. Available →
+the ticket is handled as if the question had never been asked. Still
+unavailable and a reply after your question says `code lane` → its lane is
+`code` for this and every later pass (the reply is the record; no label, no
+split), reported as `lane forced to code by reply: #<id>`. Still unavailable
+and no such reply → leave the card in Question, post nothing, and report
+`prose lane not installed: #<id> still waiting`.
+
 ### A bundle never spans lanes
 
 A `collision` or `effort` package whose members do not all share one lane is
@@ -792,7 +845,9 @@ closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 2); `recut applied: #<from> → #<to>` (Step 3.7); `capability split: #<pkg> → #<new> (automatable — blocked_by written | manual — no relation)` (Step 3.4); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
-`bundle rejected (spans lanes): …` and `lane undecided: #<id> — …` (Step 2).
+`bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
+`prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
+#<id>` and `prose lane not installed: #<id> still waiting` (Step 2).
 
 Next to the "<n> Question cards still waiting, <m> belong to run" count,
 always when it is not zero: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>`
@@ -840,6 +895,11 @@ are all in the Question column — then run
 - **The lane comes from `scripts/gatekeeper/classify-lane.py`, never from a
   model.** One package, one lane; a `mixed` ticket is split, a bundle that
   spans lanes is rejected, and a ticket is split at most once (Step 2).
+- **No prose routing without the prose lane.** Whether
+  `agent-autonomous-prompt-engineer` is installed comes from
+  `scripts/gatekeeper/prose-lane-available.py`; when it is not, a `prose` or
+  `mixed` ticket goes to Question — never labelled, never split, and never
+  quietly sent down the code lane (Step 2).
 - **`gatekeeper-ignore` is the human's label.** It is filtered in Step 1's
   `list_tickets` calls and checked nowhere else; you never create, add or
   remove it.

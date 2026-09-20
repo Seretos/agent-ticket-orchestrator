@@ -230,6 +230,16 @@ arrive too late for the ordering pass.
 A skip is never an abort and never a Question. Record it and continue — the
 same rule as every other failure mode in this skill.
 
+**A `lane:prose` package needs the prose lane installed.** The prompt
+engineer is an optional plugin, not a dependency. For a package carrying
+`lane:prose`, run
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/prose-lane-available.py" "<local_path>"`
+before claiming it. `exit 2` (unavailable) → **skip this package** exactly
+like a blocked one: leave the card in **Todo**, cut no worktree, start no
+session, record `skipped: prose lane not installed`, continue. A session
+started on a skill that does not exist would burn the `failed` retry and end
+in Question for something a human fixes with one settings line.
+
 **Gate on the previous package — verify, do not assume.** Here "previous
 package" means the last package this run actually *processed*, in the
 dependency order from Step 1a — not necessarily the one immediately before it
@@ -476,7 +486,8 @@ One table: `package · result (Done / Question / Skipped) · note · PR
 clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `blocked-escalated`,
 `manual cleanup: <path>`, `skipped: blocked by #<b> (<column>)`,
-`skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`.
+`skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`,
+`skipped: prose lane not installed`.
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
 one line per sequencing violation observed during the run, and one line per
 dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,

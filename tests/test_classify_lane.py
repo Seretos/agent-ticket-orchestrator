@@ -244,11 +244,18 @@ def test_the_lane_label_is_the_same_token_on_both_sides():
     assert "`lane:prose`" in _text(RUN)
 
 
-def test_every_started_lower_plugin_is_a_declared_dependency():
+def test_the_developer_is_a_dependency_and_the_prompt_engineer_is_optional():
+    """The code lane's plugin is needed everywhere and declared; the prose
+    lane's is detected per project and must NOT be a hard dependency -- and
+    the detector looks for exactly the plugin the script would start."""
     deps = {d["name"] for d in json.loads(_text(PLUGIN_JSON))["dependencies"]}
-    for entry in _script_entries().values():
-        plugin = entry.lstrip("/").split(":", 1)[0]
-        assert plugin in deps, f"{plugin} is started by the script but not declared in plugin.json"
+    entries = _script_entries()
+    code_plugin = entries["code"].lstrip("/").split(":", 1)[0]
+    prose_plugin = entries["prose"].lstrip("/").split(":", 1)[0]
+    assert code_plugin in deps
+    assert prose_plugin not in deps
+    detector = _text(REPO_ROOT / "scripts" / "gatekeeper" / "prose-lane-available.py")
+    assert f'PLUGIN = "{prose_plugin}"' in detector
 
 
 def test_both_candidate_enumerations_carry_the_ignore_filter():
