@@ -42,6 +42,15 @@ and in the ticket tracker.
    `get_symbols_overview`, `find_referencing_symbols`, `find_declaration`)
    first, `Glob`/`Grep`/`Read` under `local_path` when Serena has nothing.
    Keep this proportionate: a footprint is a handful of paths, not a plan.
+   **Report the footprint as `paths`** on the ticket's entry (output format
+   below): repo-relative file paths, each with a `role` — `deliverable` for a
+   file the ticket exists to change, `accompanying` for one that merely
+   follows the change (the README line, the `AGENTS.md` note, a docstring).
+   A file that does not exist yet is reported under the path the ticket or
+   the repository's layout gives it. You report paths and roles only: which
+   lower plugin a package runs in (its *lane*) is decided from them by a
+   script the gatekeeper runs, never by you — do not name a lane, and do not
+   cut packages by one.
 3. **Cut packages.** Exactly two bundling reasons exist, both equally valid:
    - **collision** — two or more tickets overlap in code (same files, same
      module, same public symbol). Processing them separately would mean a
@@ -98,7 +107,9 @@ First a fenced JSON block, exactly this shape:
   "packages": [
     { "title": "<epic title or the single ticket's title>",
       "reason": "collision" | "effort" | "single",
-      "tickets": [{ "id": <id>, "size": "small" | "medium" | "large" }, ...],
+      "tickets": [{ "id": <id>, "size": "small" | "medium" | "large",
+                    "paths": [{ "path": "<repo-relative file>",
+                                "role": "deliverable" | "accompanying" }, ...] }, ...],
       "rationale": "<one or two sentences; for collision name the shared files/symbols>",
       "depends_on": [
         { "ticket": <id>,
@@ -119,7 +130,10 @@ First a fenced JSON block, exactly this shape:
 
 Every candidate id appears in exactly one package. Ids are the tracker's
 numeric ids without `#`. Each ticket entry's `size` is **required** —
-`small`/`medium`/`large`, estimated as described in Step 3. `depends_on` is
+`small`/`medium`/`large`, estimated as described in Step 3. Each ticket
+entry's `paths` is **required** as well — the Step 2 footprint, files not
+directories, `[]` only when the ticket names nothing that can be grounded in
+the repository (say so in the rationale). `depends_on` is
 **always present** — `[]` when there is none; a key that appears only
 sometimes is a key the gatekeeper will get wrong. Each `depends_on` entry's
 `ticket` is a raw numeric id and may name a ticket **outside the candidate
