@@ -313,10 +313,11 @@ person can); this step writes. A capability that already has an open ticket
 never reaches it — the clarifier reports that one as `depends_on` with
 `needs_pipeline_support: none`.
 
-1. **Idempotency first.** `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=400)`
+1. **Idempotency first.** `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=600)`
    — a `## Capability split (gatekeeper)` comment whose `gatekeeper:capability`
-   block names this capability means an earlier pass already split it: create
-   nothing. For `auto:`, its `capability_ticket:` id still joins `deps` below.
+   block names this capability means an earlier pass already split it: skip items 2, 3,
+   5 and 6 for it, so no ticket is created, no `recut` entry is emitted and no second
+   split comment is posted. For `auto:`, its `capability_ticket:` id still joins `deps` in item 4.
 2. **Label.** `list_labels(project_id)`, then `create_label(project_id,
    "pipeline-capability")` if absent — GitHub 404s on an unknown label at
    `create_ticket` time.

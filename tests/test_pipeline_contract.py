@@ -2960,6 +2960,20 @@ def test_gatekeeper_creates_the_capability_ticket_idempotently():
     assert ll and cl and ll[0][0] < cl[0][0], "list_labels must precede create_label"
 
 
+def test_gatekeeper_already_split_capability_skips_recut_and_comment():
+    s = _gatekeeper_step_3_4()
+    item1 = _slice(s, "1. **Idempotency first.**", "2. **Label.**")
+    sent = [x for x in _sentences(item1) if "already split" in x]
+    assert sent, "the already-split sentence must exist in item 1"
+    x = sent[0]
+    assert "recut" in x, x
+    assert "split comment" in x, x
+    assert not re.search(r"create\s+nothing", x, re.IGNORECASE), x
+    assert re.search(r"skip items?\s+2", x), x
+    tail = item1[item1.index(x):]
+    assert "capability_ticket:" in tail and "deps" in tail and "auto:" in tail, tail
+
+
 def test_gatekeeper_blocks_only_on_the_automatable_capability():
     s = _gatekeeper_step_3_4()
     assert "add_relation(" not in s, "Step 3.4 reuses Step 3.5's write, no second path"
