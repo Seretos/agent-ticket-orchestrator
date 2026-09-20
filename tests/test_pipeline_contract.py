@@ -42,6 +42,7 @@ BUNDLER = AGENTS_DIR / "bundler.md"
 CLARIFIER = AGENTS_DIR / "clarifier.md"
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
 README = REPO_ROOT / "README.md"
+DESCRIPTION = REPO_ROOT / "description.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
@@ -2621,3 +2622,125 @@ def test_every_parsed_markdown_file_is_lf_only():
         paths += sorted(TEMPLATES.glob("*.yml"))
     offenders = [str(p) for p in paths if p.exists() and b"\r\n" in p.read_bytes()]
     assert offenders == []
+
+
+# --- #31: no Review column; run refuses a project without pulls.merge ------
+
+def test_run_stops_when_merge_is_not_permitted():
+    """Driving test (#31 R1): Precondition 3 is a STOP for `pulls.merge:
+    false`, stated before Step 0, pointing at the single-ticket path and
+    saying nothing was touched. The old 'still run' fallback is gone."""
+    text = _read(RUN)
+    pre = _slice(text, "## Preconditions (per project)", "## Flow per project")
+    p3 = _slice(pre, "3. **Merge permission.**", "4. **Repo root.**")
+    # semantic: the ONE sentence of Precondition 3 that contains STOP must
+    # itself carry the condition (`pulls.merge`, `false`) and the redirect
+    flat = " ".join(p3.split())
+    stop_sents = [sn for sn in re.split(r"(?<=[.!?])\s+", flat) if "STOP" in sn]
+    assert len(stop_sents) == 1, f"Precondition 3 needs exactly one sentence with STOP, got {stop_sents}"
+    stop_sent = stop_sents[0]
+    for needle in ("pulls.merge", "false", "/agent-autonomous-developer:process-ticket"):
+        assert needle in stop_sent, f"the STOP sentence must contain {needle!r}: {stop_sent!r}"
+    assert not re.search(r"still run|still works|carry on|continue", p3, re.I), (
+        "Precondition 3 must contain no continue-anyway wording"
+    )
+    assert re.search(r"no (?:column|card)[^.]*(?:worktree)[^.]*(?:session)|nothing (?:was|is|has been) touched",
+                     p3, re.I), "Precondition 3 must state that nothing was touched"
+    # the STOP sentence itself sits in Precondition 3 (slice membership) and
+    # precedes the first board-write / worktree / session / enumeration call
+    # anywhere in the file -- a real, falsifiable ordering, not a layout fact
+    stop_off = text.index("3. **Merge permission.**") + p3.index("STOP")
+    first_action = min(
+        text.index(tok)
+        for tok in ("worktree_create", "update_ticket", "start-package-session.sh", "list_tickets(")
+    )
+    assert stop_off < first_action, "the STOP must precede every board write, worktree and session call"
+    assert not re.search(r"still run|merge not permitted for this project", text, re.I), (
+        "the run-anyway-and-park fallback must be deleted"
+    )
+
+
+def test_run_precondition_3_still_reads_pulls_merge():
+    """Preservation guard (green before and after #31, NOT driving evidence):
+    keeps test_project_resolution_is_lean's slice of the resolved entry valid."""
+    text = _read(RUN)
+    p3 = _slice(text, "3. **Merge permission.**", "4. **Repo root.**")
+    assert re.search(r"read\s+`permissions\.pulls\.merge`", p3)
+
+
+def test_run_required_columns_drop_review():
+    """(#31 R2) Precondition 2 lists Todo/Doing/Done/Question only; existing
+    boards keep an extra column, which run neither reads nor requires. The
+    clause is phrased without the capitalised column name on purpose, so the
+    file-wide absence test below can hold at the same time."""
+    text = _read(RUN)
+    pre = _slice(text, "## Preconditions (per project)", "3. **Merge permission.**")
+    item2 = pre[pre.index("2. **Board columns.**"):]
+    m = re.search(r"logical\s+columns\s+((?:`\w+`[,\s]*(?:and\s+)?)+)", item2)
+    assert m, "Precondition 2 must list the required logical columns"
+    assert re.findall(r"`(\w+)`", m.group(1)) == ["Todo", "Doing", "Done", "Question"], m.group(1)
+    assert not re.search(r"\bReview\b", pre)
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(item2.split()))
+    assert any(
+        re.search(r"existing boards?", sn, re.I)
+        and re.search(r"neither reads nor requires|does not read|never reads", sn, re.I)
+        for sn in sentences
+    ), "one sentence of Precondition 2 must say existing boards with an extra column stay valid and unread"
+
+
+def test_review_column_is_gone_from_the_contract():
+    """(#31 R2) The column name is absent (case-sensitive, word-bounded) from
+    all four documents. Lower-case 'review' (rounds, review-verdict) is fine."""
+    for path in (RUN, AGENTS_MD, README, DESCRIPTION):
+        m = re.search(r"\bReview\b", _read(path))
+        assert m is None, f"{path.name}: 'Review' survives at offset {m.start()}"
+    # the lower-case review vocabulary survives where the comment-event
+    # contract describes the lower plugin's events (bound to that paragraph)
+    paras = re.split(r"\n\s*\n", _read(AGENTS_MD))
+    assert any(
+        "`review-verdict`" in para and "Events, exhaustive" in para and "`rounds`" in para
+        for para in paras
+    ), "sweep over-reached: review-verdict gone from the event-vocabulary paragraph"
+
+
+def test_agents_md_board_table_and_permissions():
+    text = _read(AGENTS_MD)
+    assert not re.search(r"^\|\s*Review\s*\|", text, re.M)
+    bullet = next(l for l in text.splitlines() if "`pulls.merge`" in l and l.startswith("- "))
+    assert not re.search(r"still works|optional|not required|not by `run`", bullet, re.I)
+    assert re.search(
+        r"`run`[^.;]{0,60}(?:requires?|needs?|refus\w*|STOP\w*)|(?:required|needed)\s+by\s+`run`",
+        bullet, re.I,
+    ), "the pulls.merge bullet must make `run` the subject that requires it (or refuses without it)"
+
+
+def test_non_conflict_merge_failures_end_in_question():
+    """(#31 R3) Protection / permission / unknown-state rows -> add_comment +
+    **Question**; conflict rows still route to the rebase retry."""
+    text = _read(RUN)
+    sect = _slice(text, "**When the merge fails", "**The pre-retry CI check")
+    rows = [l for l in sect.splitlines() if l.startswith("|")][2:]
+    non_conflict, conflict = [], []
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        kind = cells[1].lower()
+        if any(k in kind for k in ("protection", "permission", "unknown")):
+            non_conflict.append(row)
+        elif re.search(r'"dirty"|"behind"|conflict', row) and "already merged" not in kind:
+            conflict.append(row)
+    assert len(non_conflict) == 3, non_conflict
+    for row in non_conflict:
+        assert "add_comment" in row and re.search(r"\*\*Question\*\*", row), row
+        assert "worktree_remove" in row and not re.search(r"\bReview\b", row), row
+    assert conflict and all(
+        "rebase retry" in r and not re.search(r"\*\*Question\*\*", r) for r in conflict
+    ), conflict
+
+
+def test_run_report_vocabulary_drops_review_and_not_permitted():
+    text = _read(RUN)
+    rep = _slice(text, "### 3. Final report", "## Waiting rule")
+    m = re.search(r"result \(([^)]*)\)", rep)
+    assert m, "final report must enumerate the result set in `result (...)`"
+    assert [x.strip() for x in m.group(1).split("/")] == ["Done", "Question", "Skipped"], m.group(1)
+    assert "merge-not-permitted" not in rep

@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then orders every open package in the board's Todo column by its blocked_by relations (a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is skipped, left untouched in Todo, and reported), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state still move the card to Done or escalate to Question as before. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
+description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then orders every open package in the board's Todo column by its blocked_by relations (a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is skipped, left untouched in Todo, and reported), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state comment on the ticket and escalate to Question; a project without pulls.merge is refused up front, before anything is touched. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -10,7 +10,7 @@ You are the unattended executor. Nobody is watching; you may run all night.
 You pull packages from **Todo**, drive each one through the lower plugin
 (`agent-autonomous-developer`) in its own worktree and its own `claude -p`
 process, and move the board card as the single status signal:
-`Todo → Doing → (Review, written by the lower plugin) → Done`, or `→ Question`
+`Todo → Doing → Done`, or `→ Question`
 when a human decision is genuinely needed.
 
 **Comments are the log, columns are the signal.** You never read a subagent's
@@ -54,13 +54,15 @@ carry any project content in your context.
 1. **MCPs loaded.** `agent-project-issues` and `agent-worktree` tools must be
    available. If not, **STOP** and tell the user to `/reload-plugins`.
 2. **Board columns.** `list_board_columns(project_id)` must contain the logical
-   columns `Todo`, `Doing`, `Review`, `Done`, `Question`. Keep the
+   columns `Todo`, `Doing`, `Done`, `Question`. Keep the
    `logical → native` map; every board write uses the *native* value. Missing
-   column → STOP for this project with the missing name.
+   column → STOP for this project with the missing name. Existing boards
+   that still carry an extra column keep it: this skill neither reads nor
+   requires it.
 3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.
-   If `false`, still run — but instead of merging, leave the package in
-   `Review` and append a final comment *"CI green, merge not permitted for
-   this project — merge manually"*. Say so in the report up front.
+   If `pulls.merge` is `false`, STOP for this project before Step 0 and tell the user to use
+   `/agent-autonomous-developer:process-ticket` for single tickets instead.
+   Nothing was touched: no column moved, no worktree created, no session started.
 4. **Repo root.** `local_path` from the resolved project entry must exist on disk and be
    a git checkout; the default branch is `git -C <local_path> symbolic-ref
    --short refs/remotes/origin/HEAD` (fallback: `main`). `worktree_create`
@@ -172,8 +174,8 @@ A blocker `#b` counts as **resolved** when **any** of:
    `Todo` is a contradiction: treat it as **not** resolved and record it,
    because it is far more likely a mis-close than finished work.
 
-Everything else is **not** resolved: `Review` (PR open, CI running, or merge
-not permitted), `Question`, `Doing`, and no board item at all.
+Everything else is **not** resolved: `Question`, `Doing`, and no board item
+at all.
 
 **Why "closed" alone is not the test.** An epic package ticket is moved to
 the **Done column** by this skill and is *not* closed — only its children
@@ -195,10 +197,10 @@ and that worktree is cut from the **post-merge** default branch
 (`worktree_create` fetches `origin` first). So at no point do two open PRs
 coexist, and a later package can never conflict with an earlier one — the
 conflict that a human would otherwise inherit after merging PR 1 of 3 cannot
-arise. This guarantee only holds while `run` merges itself; with
-`pulls.merge: false` the packages pile up in **Review** and the human who
-merges them by hand also inherits the conflicts. That trade is the human's,
-not this skill's — it is stated here so nobody "fixes" it by parallelising.
+arise. This guarantee only holds while `run` merges itself, which is why
+Precondition 3 refuses a project with `pulls.merge: false` instead of letting
+packages pile up unmerged. It is stated here so nobody "fixes" it by
+parallelising.
 
 The guarantee is only worth something if it is **verified**, not assumed —
 step **a** below checks the previous package actually cleared before cutting
@@ -216,7 +218,7 @@ arrive too late for the ordering pass.
 
 - Every blocker resolved → proceed exactly as below.
 - A blocker that was in Todo did **not** reach Done — it ended in
-  `Question`, `Review` or `Doing` → **skip this package**. Leave the card in
+  `Question` or `Doing` → **skip this package**. Leave the card in
   **Todo**, do not move it to Doing, do not cut a worktree, do not start a
   session, and record `skipped: blocker #<b> ended in <column>`. Then
   continue with the next package. This is the
@@ -297,7 +299,7 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 
 | latest event | you do |
 |---|---|
-| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If merge is not permitted (Precondition 3): leave in Review, comment, remove worktree. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
+| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
 | `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
@@ -360,9 +362,9 @@ text. Then, in this order:
 | `merged: true` (or `status: "merged"`) | already merged — a race, or a human merged it by hand | treat as a successful merge: → **Done**, `worktree_remove`. Note `merged externally` in the report. |
 | GitHub `mergeable_state: "dirty"`, or GitLab `detailed_merge_status` in {`conflict`, `need_rebase`}, or (any provider) the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
 | GitHub `mergeable_state: "behind"` | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
-| GitHub `mergeable_state` in {`blocked`, `draft`, `unstable`, `has_hooks`}, or GitLab `detailed_merge_status` in {`ci_must_pass`, `ci_still_running`, `blocked_status`, `discussions_not_resolved`, `not_approved`, `draft_status`, `broken_status`, `not_open`} | branch protection, a required review, a required check | **today's behaviour**: `add_comment` with the exact error and the `mergeable_state`, leave the card in **Review**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
-| a permission error (`pulls.merge`, 403, "not permitted") | permission | as above, with the note *"CI green, merge not permitted — merge manually"*. |
-| `mergeable_state` still uncomputed after the second fetch, and the error text names nothing | unknown | **today's behaviour** (Review, `merge-failed (state unknown)`). Never guess a conflict from silence — a wrong guess costs a whole session. |
+| GitHub `mergeable_state` in {`blocked`, `draft`, `unstable`, `has_hooks`}, or GitLab `detailed_merge_status` in {`ci_must_pass`, `ci_still_running`, `blocked_status`, `discussions_not_resolved`, `not_approved`, `draft_status`, `broken_status`, `not_open`} | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
+| a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, move the card to **Question**, `worktree_remove`, record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
+| `mergeable_state` still uncomputed after the second fetch, and the error text names nothing | unknown | `add_comment`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
 
 A **conflict is mechanical** and belongs to this system. Everything else on
 this table is a decision or a configuration, and belongs to a human. See
@@ -373,7 +375,7 @@ non-terminal event for a reason that has nothing to do with the package: it can 
 CI run is still `in_progress`, or even after that run has already finished green, simply because
 the session ended before it read the result. Two independent incidents escalated to Question on
 exactly this (`agent-ticket-orchestrator#8`): `agent-worktree` package #165 (one CI run green,
-the other still running when the session exited) and `agent-project-issues` package #268 (**both**
+the other still executing when the session exited) and `agent-project-issues` package #268 (**both**
 gating runs had already completed successfully before the session exited — there was nothing left
 to wait for, let alone decide). Before spending the `failed`/no-terminal-event retry:
 
@@ -414,7 +416,7 @@ and a conflict is a retry* below for why they do not share a counter).
    base that moved means "repair only" to it — see the lower plugin's
    `AGENTS.md`, "Phase 0 orients on the branch instead of taking a
    parameter"). Then stop and wait for the completion notification, exactly
-   as step 2b. A repair session is short but still runs the CI gate — budget
+   as step 2b. A repair session is short but goes through the CI gate as well — budget
    the same 45-minute rounds.
 3. **React to the new latest event.**
    - `ci-green` → back to the top of the `ci-green` row: `merge_pr(…, response="light")`, verify
@@ -454,10 +456,10 @@ continue. A stuck worktree never blocks the next package.
 
 ### 3. Final report
 
-One table: `package · result (Done / Question / Review / Skipped) · note · PR
+One table: `package · result (Done / Question / Skipped) · note · PR
 · rounds (from the last event's `rounds`) · attempts`. `note` is empty for a
 clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
-`merge-conflict`, `merge-failed`, `merge-not-permitted`, `blocked-escalated`,
+`merge-conflict`, `merge-failed`, `blocked-escalated`,
 `manual cleanup: <path>`, `skipped: blocked by #<b> (<column>)`,
 `skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`.
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
@@ -552,7 +554,7 @@ full cycle in parallel with #4's still-open PR — the "never two open PRs"
 guarantee (see § 2's rationale) silently did not hold, because nothing checked
 it. A human merged #14 by hand; #5 then also reached `ci-green` (PR #16), but
 by then the base had moved and PR #16 came back `mergeable_state: dirty`. The
-only reaction available under the old contract was to leave #16 in Review and
+only reaction available under the old contract was to park #16 and
 report `merge-failed` — a dead end that needed a human to rebase it by hand,
 for a conflict that carried no decision at all.
 
@@ -609,7 +611,7 @@ as an ordinary retry, just `attempt+1`.
   that direction is human-only (→ Todo or → Backlog).
 - **Board writes are the status channel; comments only where this skill says**
   (failure summary before → Question, the one-line escalation, the
-  merge-not-permitted / merge-failed notes, and the merge-outcome
+  merge-failed notes, and the merge-outcome
   classification's own comments: both merge attempts on a persisted conflict,
   the one-line escalation after a `blocked` rebase).
 - **Project id comes from the repo's `origin`** (or an explicit argument) and is
