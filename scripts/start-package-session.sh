@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Starts one headless agent-autonomous-developer session for one work package and
-# waits for it to end. This is the `run` skill's only way of dispatching work; the
+# Starts one headless lower-plugin session for one work package and waits for it to
+# end. Which lower plugin is decided by the package's lane (see --lane below). This is the `run` skill's only way of dispatching work; the
 # skill calls it with `Bash(run_in_background: true)` from its own turn and is woken
 # by the harness when the process exits.
 #
@@ -11,7 +11,15 @@
 # time and can be tested on its own.
 #
 # Usage:
-#   start-package-session.sh <project_id> <package> <worktree_path> <base_branch> <attempt> [<run_root>]
+#   start-package-session.sh [--lane code|prose] <project_id> <package> <worktree_path> <base_branch> <attempt> [<run_root>]
+#
+# Lane: `code` (the default -- a call without --lane behaves exactly as before) starts
+# /agent-autonomous-developer:process-developer; `prose` (a package ticket carrying the
+# `lane:prose` label) starts /agent-autonomous-prompt-engineer:process-prompt-engineer.
+# The lane -> entry table lives here and nowhere else: the caller passes a lane, never
+# a skill name, so no free-form string ever reaches a bypassPermissions prompt. Both
+# entries take the same parameters and speak the same adev:event v1 contract; nothing
+# else in this script depends on the lane.
 #
 # Prints `RUNDIR=<dir>` first, then `EXIT=<code>` last. Exit code = the session's.
 # Writes <rundir>/stream.jsonl, <rundir>/stderr.txt, <rundir>/exit_code.
@@ -39,8 +47,21 @@
 # or 25 s — never across the run.
 set -uo pipefail
 
+USAGE="usage: $0 [--lane code|prose] <project_id> <package> <worktree_path> <base_branch> <attempt> [<run_root>]"
+
+LANE="code"
+if [ "${1:-}" = "--lane" ]; then
+  if [ $# -lt 2 ]; then echo "$USAGE" >&2; exit 2; fi
+  LANE="$2"; shift 2
+fi
+case "$LANE" in
+  code)  ENTRY="/agent-autonomous-developer:process-developer" ;;
+  prose) ENTRY="/agent-autonomous-prompt-engineer:process-prompt-engineer" ;;
+  *) echo "unknown lane: $LANE (valid: code, prose)" >&2; echo "$USAGE" >&2; exit 2 ;;
+esac
+
 if [ $# -lt 5 ] || [ $# -gt 6 ]; then
-  echo "usage: $0 <project_id> <package> <worktree_path> <base_branch> <attempt> [<run_root>]" >&2
+  echo "$USAGE" >&2
   exit 2
 fi
 
@@ -76,7 +97,7 @@ fi
 # --- start: exactly the contract entry point, cwd = worktree --------------------------
 (
   cd "$WORKTREE" && exec claude -p \
-    "/agent-autonomous-developer:process-ticket package=$PACKAGE project_id=$PROJECT worktree_path=$WORKTREE base_branch=$BASE attempt=$ATTEMPT" \
+    "$ENTRY package=$PACKAGE project_id=$PROJECT worktree_path=$WORKTREE base_branch=$BASE attempt=$ATTEMPT" \
     --permission-mode bypassPermissions \
     --disallowedTools AskUserQuestion \
     --output-format stream-json --verbose \

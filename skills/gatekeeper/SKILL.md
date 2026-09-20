@@ -73,9 +73,33 @@ projects to the point where finding the asked-about tickets was work).
 ## Step 1 — enumerate the Backlog, and your own answered Question cards
 
 ```
-list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True)
-list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True)
+list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])
+list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])
 ```
+
+**A ticket carrying the `gatekeeper-ignore` label is not a candidate.** The
+label is a human's "not now": they set it, they remove it, and removing it
+puts the ticket back into the next pass unchanged. The exclusion happens
+here, in the two calls above, and nowhere else — an ignored ticket never
+reaches the bundler, the clarifier, an epic, a comment or a column move, so
+no later step checks for the label. That covers your own answered Question
+cards too: an ignored one is not re-bundled. The filter needs no label in the
+repository's catalog (verified on GitHub, 2026-09-21: `not_labels` naming a
+label that does not exist returns the unfiltered list, no error) — you never
+create the label, never add it and never remove it.
+
+Two more calls, for the report only — their result feeds Step 5's `ignored`
+line and nothing else:
+
+```
+list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])
+list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])
+```
+
+A candidate whose `depends_on` names an ignored ticket is nothing new: the
+ignored ticket is a blocker outside this pass, the relation is written as
+for any other (Step 3.5), and `run` withholds the dependent until the
+blocker reaches Done.
 
 Then drop every ticket that is **already a child of an epic**: for each
 candidate call `list_hierarchy(project_id, ticket_id)` and exclude it when
@@ -103,7 +127,8 @@ they are and are not mentioned in the report except by count ("<n> Question
 cards still waiting, <m> belong to run").
 
 0 candidates → report "Backlog is empty / fully packaged, no answered
-Question cards" and stop.
+Question cards" — plus the `ignored` line of Step 5 when any ticket was
+skipped for its label — and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
 
@@ -130,7 +155,8 @@ It returns a JSON block:
 ```json
 { "packages": [
   { "title": "...", "reason": "collision" | "effort" | "single",
-    "tickets": [{ "id": <id>, "size": "small" | "medium" | "large" }, ...],
+    "tickets": [{ "id": <id>, "size": "small" | "medium" | "large",
+                  "paths": [{ "path": "...", "role": "deliverable" | "accompanying" }, ...] }, ...],
     "rationale": "...",
     "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ],
     "recut": [ { "from": <id>, "to": <id>, "slice": "...", "why": "..." } ],
@@ -160,6 +186,119 @@ its children are ordinary tickets, not a one-way transformation.
 ticket. If you clarified first and bundled afterwards, the answers would sit
 on tickets that then become children, and the epic the run actually processes
 would carry none of them.
+
+### Every ticket gets a lane, from a script
+
+Two lower plugins exist, and a package runs in exactly one: `code`
+(`agent-autonomous-developer`, test-first) or `prose`
+(`agent-autonomous-prompt-engineer`, for files a model executes — skills,
+agents, prompts). A prose change sent to the developer deadlocks its critic
+gates and lands in Question (`agent-autonomous-developer#122`, this repo's
+`#35`). The lane is **derived from paths by a program** — never asked of a
+human, the bundler or the clarifier, and never your own judgement.
+
+For every ticket in the bundler's JSON, **before** anything is materialised,
+pipe its `paths` list, unchanged, as JSON on **stdin** to
+`scripts/gatekeeper/classify-lane.py` (`python`, or `python3` if `python` is
+not on PATH) and read stdout:
+
+```
+lane: code | prose | mixed
+deliverables: <n> | none
+path: <lane> <role> <path>
+```
+
+`exit 0` is a decided verdict. `exit 2` is unusable input — in practice an
+empty `paths`: treat the ticket as `code` (today's behaviour) and record
+`lane undecided: #<id> — no footprint, treated as code` for Step 5. The
+path → lane table lives in that script and only there; do not restate or
+second-guess it.
+
+**A ticket an earlier pass already split keeps the lane that split gave
+it.** `list_comments(project_id, ticket_id, order="desc", limit=20, body_max_chars=600)`
+— a `## Lane split (gatekeeper)` comment's `gatekeeper:lane` block carries
+`lane:` for this ticket; take it instead of the verdict, and never split the
+same ticket twice. (Its body still describes both halves, so the bundler will
+report both again; the `Non-goal (re-cut to #<n>)` line is what took the
+prose half out.)
+
+### A bundle never spans lanes
+
+A `collision` or `effort` package whose members do not all share one lane is
+rejected, the same way an oversized `collision` package is (below): members
+of the same decided lane stay together as one package of the original
+`reason` when two or more remain, a lone member becomes `single`, and every
+`mixed` member becomes `single` so it can be split. Each member's
+`depends_on` entries are kept and written through Step 3.5. Report it in
+Step 5 as `bundle rejected (spans lanes): #a, #b code · #c prose`.
+
+### A mixed ticket is split into a code ticket and a prose ticket
+
+One package is one branch, one PR, one event stream and one set of retry
+budgets, so a `mixed` ticket is never run as two processes on one ticket —
+it becomes two tickets with a dependency. Code first (a script with real
+behaviour tests), prose second (the skill that calls the merged script).
+For each ticket whose verdict is `lane: mixed` with `deliverables:` a
+number:
+
+1. **Label.** `list_labels(project_id)`, then
+   `create_label(project_id, "lane:prose")` if absent — GitHub 404s on an
+   unknown label at `create_ticket` time.
+2. **Create the prose ticket.** No `custom_fields`, so it lands in Backlog.
+   The body is exactly the two headings `templates/ISSUE_TEMPLATE/task.yml`
+   requires:
+
+   ```
+   create_ticket(project_id, title="<the original title> — prose half", labels=["lane:prose"], template="task", body="### Goal
+   The model-executed files of #<original>, changed as #<original> describes, once its code half has merged: <the deliverable paths the classifier listed as prose>
+
+   ### Acceptance
+   <the original ticket's acceptance lines that concern those files, verbatim; when none can be told apart: "The files above carry the change #<original> describes for them and refer to what #<original> merged.">
+   Evidence is the prose lane's own (blind tests, step replays) — never a string-presence test on these files.")
+   ```
+
+3. **The original keeps the code half** — its lane is `code` from here on —
+   and the new ticket joins this pass as a `single` package of lane `prose`:
+   it is clarified in Step 3 like any other package, which is why the split
+   happens here and not after clarification.
+4. **Order.** Add the original's id to the new ticket's `deps`, so Step 3.5
+   writes `blocked_by` from the prose ticket to the code ticket and verifies
+   it with `relation-readback.py`.
+5. **Move the slice.** Emit a `recut` entry `{from: <original>, to: <new
+   ticket>, slice: <the prose paths and what the ticket asks of them>, why:
+   "model-executed prose runs in the prose lane, after the code it calls has
+   merged"}` for Step 3.7 — `## Frame (gatekeeper)` on both, the slice as an
+   additional requirement on the new ticket and a non-goal on the original,
+   no epic, no confirmation round.
+6. **Record it**, once, on the original:
+
+   ```
+   add_comment(project_id, ticket_id=<original>, body="## Lane split (gatekeeper)
+
+   Code half: this ticket.
+   Prose half: #<new ticket> — blocked_by this ticket.
+   Paths: <every `path:` line of the classifier, verbatim>
+
+   <!-- gatekeeper:lane v1
+   lane: code
+   prose_ticket: #<new ticket>
+   -->
+
+   Object by replying on this ticket.")
+   ```
+
+   The MCP prepends `#ai-generated`; do not add it yourself. The block is
+   read by the same dumb `key: value` reader as `adev:event`.
+
+**`lane: mixed` with `deliverables: none`** is the one shape nobody can
+argue from the paths — both halves were reported as accompanying, so there
+is no deliverable to cut along. Do not split and do not clarify: post
+`## Clarification needed (gatekeeper)` with the classifier's output verbatim
+and the one question "Which of these files is this ticket for — the code, the
+model-executed prose, or both?", move the ticket to Question (Step 3's
+calls), and go on. **Once:** when the ticket returns answered and the verdict
+is still `mixed` / `deliverables: none`, treat it as `code` and record
+`lane undecided: #<id> — treated as code` for Step 5.
 
 ### Materialise multi-ticket packages as epics
 
@@ -201,6 +340,16 @@ Each member's `depends_on` entries, including the kept large↔large edge, are w
 Report it in Step 5 as `collision package rejected (2 large tickets): #a, #b are now single`.
 
 From here on, *package ticket* means the epic, or the single ticket.
+
+**Record the lane on the package ticket.** A package's lane is its members'
+shared lane (a bundle never spans lanes, above). A `prose` package ticket
+carries the label `lane:prose` — `list_labels` / `create_label` if absent,
+then `update_ticket(project_id, ticket_id=<package>, labels_add=["lane:prose"], response="light")`,
+skipped when it already carries it. A `code` package carries **no** label;
+when a returning ticket carries `lane:prose` but is `code` on this pass,
+`labels_remove=["lane:prose"]`. The label is the whole interface to `run`:
+it starts the prose lane's entry skill for a package that carries it and the
+developer's for every other, and looks at the lane for nothing else.
 
 **Build the package map while materialising.** Keep, for the rest of this
 pass, every candidate ticket id → the id of the package ticket it now belongs
@@ -507,7 +656,7 @@ label and post a comment — exactly the same shape as
 the clarifier's read-only output into board state.
 
 ## Step 3.7 — apply a recut
-Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it. The `recut` entry Step 3.4 emits is admitted as well, its `to` being the capability ticket that step created this pass.
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it. The `recut` entry Step 3.4 emits is admitted as well, its `to` being the capability ticket that step created this pass, and so is the one Step 2's lane split emits, its `to` being the prose ticket created there.
 
 For each `recut` entry, on **both** endpoints, in this order:
 
@@ -629,7 +778,7 @@ relation moves to Planned like any other CLEAR package — see Step 3.5.
 
 ## Step 5 — report
 
-A table: `package · kind (epic/single) · tickets · reason (bundler) ·
+A table: `package · kind (epic/single) · lane (code/prose) · tickets · reason (bundler) ·
 depends on (#ids, or —) · result (Planned / needs answer — see ticket #<id>)`.
 Under each row, two indented lines from the frame block: `symptom: <…>` and
 `measurement: <…>`.
@@ -641,7 +790,14 @@ which is still in Backlog` for a blocker that has not itself reached Planned
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
 2); `recut applied: #<from> → #<to>` (Step 3.7); `capability split: #<pkg> → #<new> (automatable — blocked_by written | manual — no relation)` (Step 3.4); `unexplained relation gap:
-#<pkg> — #<ids>` for a package withheld from Planned (Step 3.5).
+#<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
+`lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
+`bundle rejected (spans lanes): …` and `lane undecided: #<id> — …` (Step 2).
+
+Next to the "<n> Question cards still waiting, <m> belong to run" count,
+always when it is not zero: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>`
+from Step 1's two report-only calls — a forgotten label is only visible
+here.
 
 For a returning candidate whose verdict changed from `previous_cut`, report
 the `changed_by` confidence signal — `changed_from_previous: #<id> —
@@ -671,15 +827,22 @@ are all in the Question column — then run
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  capability tickets, `blocked_by`/`relates_to` relations, labels (including
-  `regression-chain` and `pipeline-capability`), clarification comments,
+  capability tickets, the prose half of a lane split, `blocked_by`/`relates_to`
+  relations, labels (including `regression-chain`, `pipeline-capability` and
+  `lane:prose`), clarification comments,
   dependency comments, frame comments, regression-chain comments,
-  capability-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
+  capability-split comments, lane-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body.
 - **Only the automatable capability blocks.** A capability split (Step 3.4) writes `blocked_by` for the `auto:` ticket alone; `manual:` writes no relation and blocks nothing, and the split is written once.
 - **Bundle before clarify**, always.
+- **The lane comes from `scripts/gatekeeper/classify-lane.py`, never from a
+  model.** One package, one lane; a `mixed` ticket is split, a bundle that
+  spans lanes is rejected, and a ticket is split at most once (Step 2).
+- **`gatekeeper-ignore` is the human's label.** It is filtered in Step 1's
+  `list_tickets` calls and checked nowhere else; you never create, add or
+  remove it.
 - **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
   package out of Planned (Step 3.5).
 - **An unexplained relation gap withholds Planned.** Unlike `blocked_by`, a relation write that `scripts/gatekeeper/relation-readback.py` cannot verify keeps the package out of Planned until the write succeeds (Step 3.5).

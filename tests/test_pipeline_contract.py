@@ -2639,7 +2639,7 @@ def test_run_stops_when_merge_is_not_permitted():
     stop_sents = [sn for sn in re.split(r"(?<=[.!?])\s+", flat) if "STOP" in sn]
     assert len(stop_sents) == 1, f"Precondition 3 needs exactly one sentence with STOP, got {stop_sents}"
     stop_sent = stop_sents[0]
-    for needle in ("pulls.merge", "false", "/agent-autonomous-developer:process-ticket"):
+    for needle in ("pulls.merge", "false", "/agent-autonomous-developer:process-developer"):
         assert needle in stop_sent, f"the STOP sentence must contain {needle!r}: {stop_sent!r}"
     assert not re.search(r"still run|still works|carry on|continue", p3, re.I), (
         "Precondition 3 must contain no continue-anyway wording"

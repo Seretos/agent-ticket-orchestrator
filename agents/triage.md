@@ -26,6 +26,9 @@ need is in the prompt.
   single ticket).
 - The `blocked` event's text verbatim: the question, its options, the
   recommendation, and what the lower plugin says it already checked.
+- `lane` — `code` (the package ran in `agent-autonomous-developer`) or
+  `prose` (it ran in `agent-autonomous-prompt-engineer`, because its
+  deliverables are files a model executes). Absent means `code`.
 
 ## Protocol
 
@@ -65,7 +68,13 @@ need is in the prompt.
    only the kinds the lower plugin declares, and only these four:
    `driving-test`, `existing-suite`, `ci-evidence`, `none`; never invent
    another. An observable that exists only in prose is `none` or
-   `ci-evidence`, never `driving-test`.
+   `ci-evidence`, never `driving-test`. All of the above is the rule for
+   `lane: code`. For `lane: prose` the package's deliverable *is* the prose,
+   and its evidence is the prose lane's own tiers (blind tests and step
+   replays, as that plugin's event text names them): never advise adding a
+   test on the prose, never name one of the four kinds above for it, and
+   never advise extracting a script — a decidable part would have been cut
+   into its own code ticket before the run.
 
 ## Output format (load-bearing — `run` parses the last line and, on
 `ANSWERED`, the chosen option)

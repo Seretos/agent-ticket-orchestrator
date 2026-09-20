@@ -7,9 +7,10 @@ description: Unattended night-shift runner — before enumerating, finishes any 
 # run — process every Todo package to a merged, CI-green PR
 
 You are the unattended executor. Nobody is watching; you may run all night.
-You pull packages from **Todo**, drive each one through the lower plugin
-(`agent-autonomous-developer`) in its own worktree and its own `claude -p`
-process, and move the board card as the single status signal:
+You pull packages from **Todo**, drive each one through its lower plugin
+(`agent-autonomous-developer`, or `agent-autonomous-prompt-engineer` for a
+package labelled `lane:prose` — see step 2b) in its own worktree and its own
+`claude -p` process, and move the board card as the single status signal:
 `Todo → Doing → Done`, or `→ Question`
 when a human decision is genuinely needed.
 
@@ -61,7 +62,7 @@ carry any project content in your context.
    requires it.
 3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.
    If `pulls.merge` is `false`, STOP for this project before Step 0 and tell the user to use
-   `/agent-autonomous-developer:process-ticket` for single tickets instead.
+   `/agent-autonomous-developer:process-developer` for single tickets instead.
    Nothing was touched: no column moved, no worktree created, no session started.
 4. **Repo root.** `local_path` from the resolved project entry must exist on disk and be
    a git checkout; the default branch is `git -C <local_path> symbolic-ref
@@ -268,8 +269,22 @@ process, with `Bash(run_in_background: true)`, through the bundled script —
 never by typing the `claude` command yourself:
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" <project_id> <id> "<worktree_path>" <default branch> <attempt>
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" [--lane prose] <project_id> <id> "<worktree_path>" <default branch> <attempt>
 ```
+
+**The lane picks the entry, and nothing else.** Read the package ticket's
+labels (Step 1a's `get_ticket` already returned them). A package carrying
+`lane:prose` is started with `--lane prose`, which makes the script start
+`/agent-autonomous-prompt-engineer:process-prompt-engineer`; any other
+package is started without the flag, exactly as before, and gets
+`/agent-autonomous-developer:process-developer`. The gatekeeper derived the
+label from the package's paths (`scripts/gatekeeper/classify-lane.py`); you
+never judge a lane yourself and never pass a skill name — the script owns the
+lane → entry table. Both entries take the same parameters and post the same
+`adev:event v1` comments, so everything below — event reading, the pre-retry
+CI check, triage, the merge-outcome classification, the rebase retry, Step 0
+and the 2a gate — is the same for both lanes. A re-dispatch of a package
+(`attempt+1`, for any reason) always uses the same lane as its first start.
 
 The script owns the mechanics (run directory, launch lock around the start,
 stream/stderr files, exit marker — see its header) and prints `RUNDIR=…`
@@ -323,7 +338,7 @@ So instead of setting the package aside:
 
 1. Dispatch the **triage** subagent (fresh, unnamed, synchronous) with the `blocked` event's
    question, options, recommendation, and what was already checked, plus `project_id`, `package`,
-   `local_path`. It reads ticket, comments, siblings and code — the same test the `clarifier`
+   `local_path` and `lane=<code|prose>` (`prose` when the package carries `lane:prose`). It reads ticket, comments, siblings and code — the same test the `clarifier`
    already applies to Backlog questions — and ends `STATUS: ANSWERED` (a chosen option plus
    reasoning) or `STATUS: ESCALATE` (why it is not answerable from context).
 2. **`ANSWERED`** → `add_comment(project_id, ticket_id=<package>, body=…)` with heading
@@ -587,7 +602,7 @@ crash, then reached `ci-green`, then had nothing left for a purely mechanical
 conflict.
 
 The lower plugin (`agent-autonomous-developer`) makes the rebase retry
-possible: its `process-ticket` skill orients on the branch itself (an open
+possible: its `process-developer` skill orients on the branch itself (an open
 PR, green CI on the exact current HEAD, and a base that moved means "repair
 only" to it) rather than taking a parameter from this skill — see its
 `AGENTS.md`, "Phase 0 orients on the branch instead of taking a parameter".
@@ -617,6 +632,9 @@ as an ordinary retry, just `attempt+1`.
 - **Project id comes from the repo's `origin`** (or an explicit argument) and is
   threaded into every call; it is never guessed from a name.
 - **Sequential.** One package at a time, one process at a time.
+- **The lane is a label, and it only picks the entry.** `lane:prose` →
+  `--lane prose`; no label → no flag. Never decide a lane yourself, never
+  pass a skill name to the script, and never branch on the lane anywhere else.
 - **`ci-green` outranks everything.** A package whose latest event is
   `ci-green` may only be reacted to via the 2c merge-outcome classification —
   never moved to Question for an unrelated reason, never left in Doing, never
