@@ -3083,13 +3083,23 @@ def _triage_without_worked_answers() -> str:
     return text if i == -1 else text[:i] + text[j:]
 
 
+# A negation bound to the kind itself: "never (a) driving-test", "not a
+# driving-test". A negation elsewhere in the sentence does not count.
+_NEG_DRIVING = re.compile(
+    r"\b(?:never|not|no)\s+(?:\w+\s+){0,2}`?driving-test", re.IGNORECASE
+)
+# "never leave it at `none`" style: the allowed kinds must not be the negated ones
+_NEG_ALLOWED = re.compile(
+    r"\b(?:never|not)\s+(?:[\w-]+\s+){0,3}`?(?:none|ci-evidence)\b", re.IGNORECASE
+)
+
+
 def test_triage_states_the_test_evidence_rule_once():
     text = _read(TRIAGE)
     step = _triage_step_5()
     rest = _triage_without_worked_answers()
     # stated once: the rule's vocabulary lives in step 5 and nowhere else
     # outside the worked answer (an instance, not a second statement)
-    assert rest.count(step) == 1
     for tok in ("agents/**", "skills/**", "AGENTS.md", "mechanically"):
         assert rest.count(tok) == 1 and tok in step, (
             f"{tok!r} must occur exactly once outside the worked answers, in step 5"
@@ -3107,10 +3117,11 @@ def test_triage_states_the_test_evidence_rule_once():
     ), "one sentence must send the decidable part to a script with tests"
     # 2: prose files carry no test; verified by real run or reviewer
     assert any(
-        "skills/**" in s and re.search(r"\bno test\b|carries? no test|without a test", s, re.IGNORECASE)
+        all(g in s for g in ("skills/**", "agents/**", "AGENTS.md"))
+        and re.search(r"\bno test\b|carries? no test|without a test", s, re.IGNORECASE)
         and re.search(r"real run|reviewer", s, re.IGNORECASE)
         for s in sents
-    ), "one sentence must say prose files carry no test, verified by a real run or the reviewer"
+    ), "one sentence must tie all three prose globs to: no test, verified by a real run or the reviewer"
     # 3: never recommend a string-presence test, exception names a reader
     # other than the proposed test itself (F1: must not re-license the pin)
     exc = [
@@ -3140,7 +3151,7 @@ def test_triage_never_invents_a_test_kind():
     ), "one sentence must name the four declared kinds as the only ones"
     assert any(
         re.search(r"prose", s, re.IGNORECASE) and re.search(r"`none`|ci-evidence", s)
-        and "driving-test" in s and _NEGATION.search(s)
+        and _NEG_DRIVING.search(s) and not _NEG_ALLOWED.search(s)
         for s in sents
     ), "one sentence must tie a prose-only observable to none/ci-evidence and exclude driving-test"
 
@@ -3155,12 +3166,16 @@ def test_triage_ships_the_122_worked_answer():
     assert re.search(r"extract[^.]*script|script[^.]*extract", b, re.IGNORECASE)
     m = re.search(r"carries? no test|no test", b, re.IGNORECASE)
     assert m, "the prose half must be declared untested"
-    assert re.search(r"real run|reviewer", b, re.IGNORECASE)
+    assert any(
+        re.search(r"carries? no test|no test", s, re.IGNORECASE)
+        and re.search(r"real run|reviewer", s, re.IGNORECASE)
+        for s in _sentences(b)
+    ), "the untested prose half must name its verification route in the same sentence"
     end = re.search(r"STATUS: ANSWERED", b)
     assert end and end.start() > m.start(), "STATUS: ANSWERED must close the answer"
     for s in _sentences(b):
         if "driving-test" in s:
-            assert _NEGATION.search(s), f"worked answer must not recommend driving-test: {s!r}"
+            assert _NEG_DRIVING.search(s), f"worked answer must not recommend driving-test: {s!r}"
 
 
 def test_triage_adds_no_new_status():
