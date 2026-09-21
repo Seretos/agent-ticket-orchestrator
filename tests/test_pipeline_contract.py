@@ -1348,8 +1348,9 @@ def test_issue_forms_carry_the_evidence_rule_in_field_descriptions():
 # wrote only one of the five dependency relations the bundler reported. This
 # package (a) teaches the bundler that a ticket's own sequencing statement is
 # `depends_on`, never `collision` (R1), ships the #9/#14 worked example (R2),
-# caps a `collision` package at one `large` ticket and owes a `recut` for an
-# overlapping large pair the cap rejects (R3), (b) has the gatekeeper reject
+# caps a `collision` package at one `large` ticket (R3; the `recut` it once
+# owed for an overlapping large pair the cap rejects became an `oversized`
+# report and a Question in #41), (b) has the gatekeeper reject
 # an oversized collision package into `single`s (R4), post the recut as a
 # `## Frame (gatekeeper)` comment on both endpoints (R5), carry `previous_cut`
 # across passes with a named-change gate (R6), and (c) makes Step 3.5's
@@ -1543,7 +1544,10 @@ def test_bundler_schema_requires_size_and_caps_collision():
         "'tickets' must be an array of objects carrying 'size', not a bare "
         "array of ids"
     )
-    assert not re.search(r'"tickets":\s*\[\s*<id>', text), (
+    # the `oversized` array (#41) names a pair by bare id, by design; the
+    # rule guards the `packages` shape.
+    packages_text = re.sub(r'"oversized":\s*\[.*?\n  \]', "", text, flags=re.DOTALL)
+    assert not re.search(r'"tickets":\s*\[\s*<id>', packages_text), (
         "the old bare-id 'tickets': [<id>, ...] form must be gone -- exactly "
         "one 'tickets' shape after this change"
     )
@@ -1598,99 +1602,127 @@ def test_bundler_schema_requires_size_and_caps_collision():
     )
 
 
-def test_bundler_owes_a_recut_for_two_large_overlapping_tickets():
+def test_bundler_reports_an_oversized_pair_instead_of_cutting_it():
+    # #41: the declined overlapping two-`large` pair used to OWE a `recut` the
+    # gatekeeper applied unconfirmed. It is now reported as `oversized`, with
+    # a proposed vertical split, and nothing is cut.
     text = _read(BUNDLER)
-    sentences = re.split(r"\.\s+", text)
+    assert "recut" not in text.lower(), "the bundler no longer knows a recut at all"
 
-    overlap_sentence = None
-    for s in sentences:
-        low = s.lower()
-        if ("two" in low or "both" in low) and "large" in low and "overlap" in low:
-            overlap_sentence = s
-            break
-    assert overlap_sentence, (
-        "expected a sentence binding two/both + large + overlap -- the "
-        "two-large-and-overlapping trigger"
-    )
-    assert re.search(r"\bmust\b|\balways\b", overlap_sentence, re.IGNORECASE), (
-        f"expected an obligation verb (must/always) in: {overlap_sentence!r}"
-    )
-    assert "recut" in overlap_sentence.lower()
-
-    # negation guard: the obligation must not be softened back into an option.
-    for softener in ("optional", "may", "can"):
-        assert not re.search(rf"\b{softener}\b", overlap_sentence, re.IGNORECASE), (
-            f"the overlap sentence must not contain {softener!r}, which "
-            f"would soften the duty back into an option: {overlap_sentence!r}"
-        )
-
-    # F3 fix (test-critic round 1): "must" + "recut" co-occurring is also
-    # satisfied by a sentence stating the INVERSE duty ("must NOT emit a
-    # recut"). Reject any prohibition phrasing outright -- the obligation
-    # must be to EMIT a recut on overlap, never to withhold one.
-    assert not re.search(r"\bmust\s+not\b|\bnever\b", overlap_sentence, re.IGNORECASE), (
-        "the overlap sentence must not contain a prohibition ('must not' / "
-        f"'never'), which would state the inverse (forbidden) duty: {overlap_sentence!r}"
-    )
-
-    # F3 fix (test-critic round 4, major): 'must' + 'recut' co-occurring,
-    # with no softener and no outright prohibition, is still satisfied by a
-    # CONTRASTIVE redirect -- "must be bundled as one collision package
-    # rather than emitting a recut" -- which carries an obligation verb and
-    # 'recut' in the same sentence without tripping either guard above, yet
-    # redirects the duty elsewhere instead of negating it. Guard against
-    # contrastive phrasing that redirects the obligation away from 'recut'.
-    assert not re.search(
-        r"\b(rather than|instead of)\b[^.\n]{0,60}\brecut\b"
-        r"|\brecut\b[^.\n]{0,60}\b(rather than|instead of)\b",
-        overlap_sentence, re.IGNORECASE,
-    ), (
-        "the overlap sentence must not redirect the obligation elsewhere "
-        f"via contrastive phrasing ('rather than'/'instead of' near "
-        f"'recut'): {overlap_sentence!r}"
-    )
-    assert not re.search(r"\bnot a recut\b", overlap_sentence, re.IGNORECASE), (
-        f"the overlap sentence must not state 'not a recut': {overlap_sentence!r}"
-    )
-
-    # a separate, opposite-polarity check: the non-overlapping rejected-pair
-    # case must be stated as owing NO recut, so an implementation that
-    # demands a recut for every rejected large pair (overlapping or not)
-    # also fails this test.
-    non_overlap_sentence = None
-    for s in sentences:
-        low = s.lower()
-        if "non-overlap" in low or "no overlap" in low or "not overlap" in low:
-            non_overlap_sentence = s
-            break
-    assert non_overlap_sentence, (
-        "expected a sentence stating that the non-overlapping rejected pair "
-        "emits no recut"
-    )
-
-    # F3 fix (test-critic round 4, major): the old check let the 'no' from
-    # 'no overlap' (which is what selected this sentence in the first
-    # place) double as the negation for 'recut' too, so "Even with no
-    # overlap, a recut is still owed for a rejected large pair." passed --
-    # the exact inverse of what this assertion exists to catch. Require the
-    # negation to sit in the SAME clause as 'recut', and forbid that clause
-    # from reusing the word 'overlap' to supply it.
-    recut_clauses = [
-        c for c in re.split(r"[,;]\s*", non_overlap_sentence)
-        if re.search(r"\brecut\b", c, re.IGNORECASE)
+    overlap = [
+        s for s in re.split(r"\.\s+", text)
+        if re.search(r"\btwo\b|\bboth\b", s, re.IGNORECASE)
+        and "large" in s.lower() and "overlap" in s.lower() and "oversized" in s
     ]
-    assert recut_clauses, (
-        f"expected a clause containing 'recut' in the non-overlap sentence: {non_overlap_sentence!r}"
+    assert overlap, "expected a sentence binding two + large + overlap to `oversized`"
+    assert re.search(r"\bmust\b", overlap[0]), overlap[0]
+    assert not re.search(r"\bmust\s+not\b|\bnever\b|\boptional\b|\bmay\b", overlap[0], re.IGNORECASE), (
+        f"the duty to report must not be softened or inverted: {overlap[0]!r}"
     )
-    for clause in recut_clauses:
-        low_c = clause.lower()
-        assert "overlap" not in low_c, (
-            "the recut clause must not reuse 'overlap' to supply its own "
-            f"negation: {clause!r}"
-        )
-        assert re.search(r"\b(no|not|never|none)\b", low_c), (
-            f"expected the recut clause itself to carry its own negation: {clause!r}"
-        )
+    assert any(
+        re.search(r"does not overlap|no overlap|non-overlap", s, re.IGNORECASE)
+        and re.search(r"\bnothing\b|\bno\b", s.split("overlap", 1)[1], re.IGNORECASE)
+        for s in re.split(r"\.\s+", text)
+    ), "a non-overlapping declined pair owes nothing"
+
+    fenced = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    block = next(b for b in fenced if '"packages"' in b)
+    over = block.split('"oversized"', 1)
+    assert len(over) == 2, "the output format must carry an `oversized` array"
+    assert block.index('"packages"') < block.index('"oversized"')
+    for key in ('"tickets"', '"why"', '"slices"', '"slice"', '"observable"', '"covers"'):
+        assert key in over[1], f"{key} missing from the oversized entry"
+    doc = next(p for p in text.split("\n\n") if p.startswith("`oversized` is"))
+    assert re.search(r"\*\*optional\*\*", doc), doc
+
+
+def test_bundler_slices_pass_the_observable_test_or_are_not_emitted():
+    text = _read(BUNDLER)
+    para = next(
+        (p for p in text.split("\n\n") if "proposed vertical split" in p and "horizontal" in p), None
+    )
+    assert para, "the observable test must be stated in the bundler"
+    flat = " ".join(para.split())
+    assert re.search(r"user of the software", flat)
+    horizontal = next(s for s in re.split(r"(?<=\.)\s+", flat) if "horizontal" in s)
+    for shape in ("shared class", "extracted core", "refactor", "test harness", "CI step",
+                  "next slice can now be built"):
+        assert shape in horizontal, f"horizontal shape {shape!r} missing: {horizontal!r}"
+    assert re.search(r"must never be emitted|must not be emitted", horizontal), horizontal
+    assert re.search(r"stands alone", flat)
+
+    fab = next((p for p in text.split("\n\n") if "Never fabricate a split" in p), None)
+    assert fab, "the no-fabrication rule must be stated"
+    fab = " ".join(fab.split())
+    assert '"slices": []' in fab and re.search(r"at least two", fab), fab
+
+    worked = _slice(text, "## Worked cuts", "## Hard rules")
+    assert "RigMotionCore" in worked and "ci-green" in worked
+    assert "unfinished" not in worked and "$70" not in worked, (
+        "#16 finished ci-green on attempt 1; the old cost claim was wrong"
+    )
+
+
+def test_gatekeeper_turns_an_oversized_pair_into_one_question():
+    text = _read(GATEKEEPER)
+    sec = _slice(
+        text, "### An oversized pair is a Question, not a cut",
+        "From here on, *package ticket* means",
+    )
+    posts = _call_spans(sec, "add_comment")
+    assert len(posts) == 1, "exactly one proposal comment is defined, on the lower id"
+    body = posts[0][1]
+    for tok in ("## Clarification needed (gatekeeper)", "**About:**", "**Decision:**",
+                "(a)", "(b)", "(c)", "*(recommended)*",
+                "<!-- gatekeeper:oversized v1", "pair:", "proposal_on:"):
+        assert tok in body, f"the proposal comment must carry {tok!r}"
+    assert re.search(r"lower ticket id", sec)
+    flat = " ".join(sec.split())
+    assert re.search(r'"slices": \[\], option \(a\) is absent', flat.replace("`", ""))
+
+    reads = _call_spans(sec, "list_comments")
+    assert reads and sec.index("list_comments(") < sec.index("add_comment("), (
+        "the idempotency read precedes the post"
+    )
+    assert re.search(r"body_max_chars\s*=\s*\d+", reads[0][1])
+    assert re.search(r"no comment newer[^.]*: post nothing and move nothing", flat), (
+        "an unanswered question is neither re-posted nor re-moved"
+    )
+
+    moves = _call_spans(sec, "update_ticket")
+    assert moves and all("Question" in m[1] and "Planned" not in m[1] for m in moves)
+    assert re.search(r"\*\*Both cards go to Question\*\*", sec)
+    assert re.search(r"[Nn]either is clarified and neither is released", flat)
+    assert re.search(r"pointer|Point the other card", sec)
+    assert "create_ticket" not in sec and "add_relation" not in sec
+
+    step1 = _slice(text, "## Step 1", "## Step 2")
+    assert "proposal_on:" in step1, "Step 1 must bring the pointer card back with its pair"
+
+    json_block = _slice(_slice(text, "## Step 2", "## Step 3 — clarify"), "```json\n", "\n```")
+    assert '"oversized"' in json_block and '"recut"' not in json_block
+
+
+def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
+    text = _read(GATEKEEPER)
+    first_para = _slice(text, "## Step 3.7", "## Step 4").split("\n\n", 1)[0]
+    assert re.search(r"lane split is the only source", first_para), first_para
+    assert re.search(r"bundler emits none", first_para), first_para
+    assert "Step 3.4" not in first_para
+    rules = text.split("## Hard rules", 1)[1]
+    assert any(
+        l.startswith("- **") and "size-driven cut" in l and "lane split" in l
+        for l in rules.splitlines()
+    ), "a Hard rule must forbid a size-driven cut and name the lane split's recut"
+
+
+def test_agents_md_records_the_oversized_question_rule():
+    text = _read(AGENTS_MD)
+    assert "with a `recut` escape hatch" not in text
+    assert "6+ hours" not in text, "the mis-recorded #16 cost sentence must be corrected"
+    para = next(p for p in text.split("\n\n") if p.startswith("**A `collision` package is capped by size"))
+    for tok in ("oversized", "observable", "Question", "gatekeeper:oversized"):
+        assert tok in para, tok
 
 
 def test_gatekeeper_rejects_oversized_collision_package():
