@@ -118,7 +118,11 @@ bundler may fold further tickets into them or leave them as-is.
    yours, even if they also carry an older clarification comment);
 3. at least one comment is **newer** than your latest clarification comment —
    somebody answered. A card with your question and nothing after it is still
-   waiting; skip it silently, nothing changed.
+   waiting; skip it silently, nothing changed. One exception, for the second
+   card of an oversized pair (Step 2): when your latest clarification comment
+   carries a `gatekeeper:oversized` block whose `proposal_on:` names another
+   ticket, the owner answers *there* — apply this test to that ticket's
+   comments instead, so both cards of the pair return in the same pass.
 
 Cards that pass go into the candidate list like any Backlog ticket — they
 are re-bundled and re-clarified the same way, and on `CLEAR` they move
@@ -136,6 +140,8 @@ skipped for its label — and stop.
 `prior_rationale` carries the prior pass's actual reasoning, distinct from the reason kind above — not just the kind — with `source` naming which comment it came from.
 `reason: "unknown"` and empty `prior_rationale` when nothing is recoverable. A first-generation candidate (never through Question before) gets no `previous_cut` at all.
 
+**Collect `oversized answered` for a returning oversized pair.** A candidate that came back from Question with a `gatekeeper:oversized` block in its clarification comment (Step 1) was asked about together with the other ticket of its `pair:`. Read the owner's reply — the comments newer than the question on the `proposal_on:` ticket, in full — and pass it to the bundler verbatim, so the pair is not reported a second time.
+
 Dispatch the `bundler` **once**, unnamed, synchronous, fresh:
 
 ```
@@ -146,6 +152,8 @@ Agent(
           Candidates (id · title · labels):\n<the full list>\n
           previous_cut (for returning candidates only): <the reconstructed
           object per candidate, omitted for a first-generation ticket>\n
+          oversized answered (for a returning oversized pair only): #a/#b —
+          <the owner's reply, verbatim>\n
           Return the packages JSON block."
 )
 ```
@@ -159,9 +167,12 @@ It returns a JSON block:
                   "paths": [{ "path": "...", "role": "deliverable" | "accompanying" }, ...] }, ...],
     "rationale": "...",
     "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ],
-    "recut": [ { "from": <id>, "to": <id>, "slice": "...", "why": "..." } ],
     "changed_from_previous": { "ticket": <id>, "was": "...", "now": "...",
                                 "changed_by": "..." } }
+  ],
+  "oversized": [
+  { "tickets": [<id>, <id>], "why": "...",
+    "slices": [ { "slice": "...", "observable": "...", "covers": [<id>, ...] } ] }
 ] }
 ```
 
@@ -392,6 +403,64 @@ No epic is materialised for it.
 Each member's `depends_on` entries, including the kept large↔large edge, are written per member through the ordinary Step 3.5 path.
 Report it in Step 5 as `collision package rejected (2 large tickets): #a, #b are now single`.
 
+### An oversized pair is a Question, not a cut
+
+The bundler reports two overlapping `size: large` tickets it declined to
+bundle as an `oversized` entry (absent on an ordinary pass): the pair, what
+overlaps, and a **proposed vertical split** — slices that each name
+something a user of the software can observe — or `"slices": []` when it
+found no honest one. You notice the pair and you ask; you never cut. A size
+judgement is not a reason to move scope between two tickets without the
+owner seeing it. For each entry, with `#a` the **lower ticket id** of the
+pair (a deterministic tie-break, not a judgement) and `#b` the other:
+
+1. **Idempotency first.** `list_comments(project_id, ticket_id=#a, order="desc", limit=20, body_max_chars=600)`
+   — a `gatekeeper:oversized` block naming this pair with no comment newer
+   than it means the question is already posted and still waiting: post
+   nothing and move nothing for this pair. With a newer comment, the pair
+   came back through Step 1 as answered and the bundler was told so
+   (`oversized answered:`, above): post nothing either — should it report
+   the pair again anyway, ignore the entry — and treat both tickets as the
+   ordinary `single` packages they are. The reply reaches the clarifier as
+   an ordinary comment.
+   You do not split a ticket or edit a body on the owner's behalf; an
+   accepted split is the owner's write.
+2. **Post the proposal, once, on `#a`:**
+
+   ```
+   add_comment(project_id, ticket_id=#a, body="## Clarification needed (gatekeeper)
+
+   ### Q1 Two large overlapping tickets — cut them differently before they run?
+   **About:** #a (<title>) and #b (<title>) are both large and overlap in <the entry's `why`>.
+   **Decision:** whether the two run as filed, one after the other, or are re-cut first into slices that each ship something a user can see.
+   - (a) Re-cut into these slices *(recommended)* — 1. <slice> — a user can then: <observable> (serves #<covers>) · 2. <slice> — …
+   - (b) Run both as filed, in dependency order — the overlap is built once in the first and re-touched by the second.
+   - (c) I cut them myself — reply here once the tickets are edited.
+
+   <!-- gatekeeper:oversized v1
+   pair: #a,#b
+   proposal_on: #a
+   -->")
+   ```
+
+   With `"slices": []`, option (a) is absent, (b) carries *(recommended)*,
+   and the `**About:**` line adds that no split into user-visible slices
+   was found. The block is read by the same dumb `key: value` reader as
+   `adev:event`. The MCP prepends `#ai-generated`; do not add it yourself.
+3. **Point the other card at it:** one comment on `#b`, heading
+   `## Clarification needed (gatekeeper)`, the single line "This ticket and
+   #a are asked about together — the question and its proposal are on #a;
+   answer there." and the same `gatekeeper:oversized` block.
+4. **Both cards go to Question** — `update_ticket(project_id, ticket_id=<each>, custom_fields={"Status": <native of Question>}, response="light")`
+   for `#a` and for `#b`. Neither is clarified and neither is released this
+   pass: releasing one half while the pair's boundary is under review would
+   dispatch a package whose scope may still change. Step 3.5 still writes
+   the bundler's `depends_on` for both — an order between them is a fact
+   whichever way the owner decides.
+
+No new answer path exists for this: Step 1's test for your own answered
+Question cards is what brings the pair back.
+
 From here on, *package ticket* means the epic, or the single ticket.
 
 **Record the lane on the package ticket.** A package's lane is its members'
@@ -483,11 +552,11 @@ fixed.
 `<!-- clarifier:frame v1 … -->` block on **both** statuses. Parse it as dumb
 `key: value` lines — the same reader `run` applies to `adev:event`: empty
 value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
-`ac`, `premise` and `depends_on` for every package, `chain` and `reframe` for
-Step 3.6, and `ac` and `premise` again for Step 4's frame comment. `premise`
-may appear more than once — collect every occurrence, in the order they
-appear. `needs_pipeline_support` is read the same way for Step 3.4: every
-occurrence, `none` when absent.
+`ac`, `premise`, `unprovable_here` and `depends_on` for every package, `chain`
+and `reframe` for Step 3.6, and `ac`, `premise` and `unprovable_here` again for
+Step 4's frame comment. `premise` may appear more than once — collect every
+occurrence, in the order they appear. `unprovable_here` is read the same way:
+every occurrence, `none` when absent.
 
 **Render the premises line, once, here — Step 3.6 and Step 4 both reuse this
 exact rendering as defined in Step 3, rather than each inventing their own.**
@@ -501,87 +570,33 @@ browser_install; schema_v2_migrated`. A single premise still uses the same
 prefix, with one item and no separator. Omit the line entirely when
 `premise` is `none`.
 
+**Render the struck clauses the same way, once, here.** An `unprovable_here`
+value is an acceptance clause this package's own PR run cannot produce
+evidence for — a real run against an external service, another OS, a
+release-only job, an installed artifact, a real shell, a person's check. For
+every collected value other than `none`, render one line each:
+
+  Not proven by this package: <clause> — this package's own PR run cannot produce that evidence; do not plan for it, and its absence is not a gap.
+
+Step 3.6, Step 3.7 and Step 4 reuse these lines verbatim. That is the whole
+reaction: you create no ticket for such a clause, write no relation, apply no
+label and emit no `recut` — the clause is struck and recorded, and the
+package is processed like any other. The clarifier has already written what
+*can* be built (the artifact that makes the check possible for whoever
+performs it later) into `ac:`.
+
 If the block is missing or unparseable, record `frame block missing` in
 Step 5's report and continue on the `STATUS:` line alone — never abort a
 pass for a malformed block.
 
-## Step 3.4 — split off a capability the PR cannot execute
-
-Runs per package, immediately after its clarifier call returns and before
-Step 3.5, **on both statuses** — once per `needs_pipeline_support` value the
-frame block carries other than `none`. The clarifier only reports (`auto:<capability>`
-when an automated job could ever run the check, `manual:<check>` when only a
-person can); this step writes. A capability that already has an open ticket
-never reaches it — the clarifier reports that one as `depends_on` with
-`needs_pipeline_support: none`.
-
-1. **Idempotency first.** `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=600)`
-   — a `## Capability split (gatekeeper)` comment whose `gatekeeper:capability`
-   block names this capability means an earlier pass already split it: skip items 2, 3,
-   5 and 6 for it, so no ticket is created, no `recut` entry is emitted and no second
-   split comment is posted. For `auto:`, its `capability_ticket:` id still joins `deps` in item 4.
-2. **Label.** `list_labels(project_id)`, then `create_label(project_id,
-   "pipeline-capability")` if absent — GitHub 404s on an unknown label at
-   `create_ticket` time.
-3. **Create the ticket.** One call per capability, no `custom_fields`, so it
-   lands in Backlog and goes through a normal pass later. The body is exactly
-   the two headings `templates/ISSUE_TEMPLATE/task.yml` requires:
-
-   ```
-   create_ticket(project_id, title=<the capability>, labels=["pipeline-capability"], template="task", body="### Goal
-   <the capability, and why package #<package> needs it>
-
-   ### Acceptance
-   <the acceptance sentence below>")
-   ```
-
-   The label goes on the `manual:` ticket too — the clarifier's closed hatch
-   reads it (`agents/clarifier.md`). Acceptance sentence for `auto:`: "The
-   capability executes in this ticket's own PR run: <criterion>. A run in which
-   it did not execute does not satisfy this — its presence in a workflow file,
-   or a green run that skipped it, is not evidence." For `manual:`: "A person
-   performs <check> and records the result here; nothing waits on it."
-4. **Blocking.** `auto:` — add the new ticket id to this package's `deps`
-   (Step 3.5's union), which writes the `blocked_by` and read-back through
-   Step 3.5's own loop. `manual:` writes no relation, ever, and blocks nothing:
-   the package ships the same night, and a person picks the check up from
-   its own ticket.
-5. **Move the criterion.** Emit a `recut` entry `{from: <package>, to: <new
-   ticket>, slice: <the criterion>, why: <the capability lies beyond
-   this package's PR run>}` for Step 3.7. It posts the "Additional
-   requirement" line on the new ticket and the "Non-goal" line on the package;
-   on the new ticket the frame comment's `Acceptance criterion:` line is the
-   acceptance sentence above, and the closing sentence is Step 3.7's third
-   variant, because that ticket has no frame block of its own.
-6. **Record it.** One comment on the package:
-
-   ```
-   add_comment(project_id, ticket_id=<package>, body="## Capability split (gatekeeper)
-
-   Capability: <the capability>
-   Ticket: #<new ticket>
-   Automatable: yes — #<package> is blocked_by #<new ticket> | no — a person performs it; nothing waits on it
-
-   <!-- gatekeeper:capability v1
-   capability_ticket: #<new ticket>
-   automatable: yes | no
-   -->
-
-   Object by replying on this ticket.")
-   ```
-
-   The MCP prepends `#ai-generated`; do not add it yourself. The block is read
-   by the same dumb `key: value` reader as `adev:event`.
-
 ## Step 3.5 — link dependencies
 
-Runs per package, immediately after its clarifier call returns (and Step 3.4), **on both
+Runs per package, immediately after its clarifier call returns, **on both
 statuses** (CLEAR and NEEDS_INPUT) — a dependency is a fact, not a decision,
 and a package that goes to Question does not make it false.
 
 ```
 deps = bundler's depends_on for this package  ∪  clarifier frame's depends_on
-       ∪  the automatable capability ticket ids of Step 3.4
 for each raw target #t:
   1. Lift. #t in the Step 2 package map -> target = map[#t]
      else list_hierarchy(project_id, #t); parent non-null -> walk up
@@ -681,6 +696,7 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    Acceptance criterion: <frame ac, or "as filed">
    Implemented as: <frame reframe, or "as filed — the ticket already has a symptom AC and a non-goal">
    Premises to verify before planning: <p1>; <p2>; … — rendered exactly as Step 3 defines; omit this line when `premise` is `none`
+   Not proven by this package: <clause> — … — one line per `unprovable_here` value, rendered exactly as Step 3 defines; omit when `none`
 
    Object by replying on this ticket; otherwise the package is built this way.
    ```
@@ -709,7 +725,7 @@ label and post a comment — exactly the same shape as
 the clarifier's read-only output into board state.
 
 ## Step 3.7 — apply a recut
-Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry the bundler emitted this pass whose `from` and `to` are both packages of this same pass — a `recut` naming anything else is a bundler bug: apply nothing, and Step 5 reports it. The `recut` entry Step 3.4 emits is admitted as well, its `to` being the capability ticket that step created this pass, and so is the one Step 2's lane split emits, its `to` being the prose ticket created there.
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry of this pass. Step 2's lane split is the only source of one: its `from` is the ticket that was split and its `to` the prose ticket created there. The bundler emits none — a size judgement is never applied as a cut (Step 2, *An oversized pair is a Question, not a cut*) — so the absence of a confirmation round below describes only a split the architecture forces, two lanes needing two lower plugins.
 
 For each `recut` entry, on **both** endpoints, in this order:
 
@@ -725,6 +741,7 @@ add_comment(project_id, ticket_id=<endpoint>, body=…)
 Symptom: <frame symptom>
 Acceptance criterion: <frame ac>
 Premises to verify before planning: <p1>; <p2>; … — omit when `premise` is `none`
+Not proven by this package: <clause> — … — one line per `unprovable_here` value, as Step 3 renders it; omit when `none`
 
 <the labelled re-cut line for this endpoint — see below>
 
@@ -737,7 +754,7 @@ On the **target** (`to`) endpoint, this line renders:
 
 Additional requirement (re-cut from #<from>): <slice>
 
-The closing sentence: when neither `ac:` nor `premise:` fired for this package, use the third variant, verbatim — "The ticket's own acceptance criterion is unchanged; the re-cut line above is part of this package's frame." Otherwise Step 4's two existing variants apply unchanged, chosen the same way Step 4 chooses them.
+The closing sentence: when neither `ac:` nor `premise:` nor `unprovable_here:` fired for this package, use the third variant, verbatim — "The ticket's own acceptance criterion is unchanged; the re-cut line above is part of this package's frame." Otherwise Step 4's variants apply unchanged, chosen the same way Step 4 chooses them.
 
 On the **source** (`from`) endpoint, this line renders:
 
@@ -765,7 +782,7 @@ No epic is created for a `recut` pair, on either endpoint, and neither endpoint 
 ## Step 4 — release to Planned
 
 On CLEAR, first the frame comment.
-Post the frame comment when `ac:` is anything other than `as-filed` — either for that reason, or because `premise:` is not `none` — unless Step 3.6 already posted a `## Regression chain (gatekeeper)` comment carrying the same content, or Step 3.7 already posted a `## Frame (gatekeeper)` comment for this same endpoint this pass: skip Step 4's post in either case, so no endpoint ever carries two frame comments.
+Post the frame comment when `ac:` is anything other than `as-filed` — either for that reason, or because `premise:` is not `none`, or because `unprovable_here:` is not `none` — unless Step 3.6 already posted a `## Regression chain (gatekeeper)` comment carrying the same content, or Step 3.7 already posted a `## Frame (gatekeeper)` comment for this same endpoint this pass: skip Step 4's post in either case, so no endpoint ever carries two frame comments.
 
 ```
 add_comment(project_id, ticket_id=<package>, body=…)
@@ -778,9 +795,14 @@ Symptom: <frame symptom>
 Acceptance criterion: <frame ac>
 <the clarifier's "Acceptance criterion" line's helper-measurement note, verbatim>
 Premises to verify before planning: <p1>; <p2>; … — rendered exactly as Step 3 defines; omit this line when `premise` is `none`
+Not proven by this package: <clause> — this package's own PR run cannot produce that evidence; do not plan for it, and its absence is not a gap.
 
 <closing sentence — pick by trigger, never both>
 ```
+
+The `Not proven by this package:` line appears once per `unprovable_here`
+value, rendered exactly as Step 3 defines, and is omitted when the key is
+`none`.
 
 The closing sentence depends on which trigger fired the comment: when
 `ac:` differs from `as-filed`, use "The ticket's own finish line measured an
@@ -788,12 +810,22 @@ internal quantity; the package is built and reviewed against the symptom
 above." — when the comment is posted solely because `premise:` is not `none`
 (the AC itself is `as-filed`, unchanged), that sentence is false and must be
 replaced with "The ticket's own acceptance criterion is unchanged; verify the
-premise(s) above before planning." Both variants end with the same final
-line: "Object by replying on this ticket."
+premise(s) above before planning." When `unprovable_here:` is not `none`,
+neither of those is true and this one takes precedence over both: "The
+clause(s) named above stay in the ticket body but are not proven by this
+package; it is built and reviewed against the acceptance criterion above."
+Every variant ends with the same final line: "Object by replying on this
+ticket."
 
 This comment is load-bearing, not decoration: the lower plugin's
 `context-extractor` reads the package ticket's comments, and this is the only
-way a rewritten AC reaches the developer and the reviewer. Idempotent like
+way a rewritten AC reaches the developer and the reviewer. The struck-clause
+line is load-bearing for the same reason, doubled: you never edit a ticket
+body, so the clause still stands there, and without the line the planner
+tries to satisfy it and the plan-critic calls its absence a gap — that is how
+`lib-python-harness#27` reached `blocked` ("the AC requires the live suite to
+execute in this PR's own run"). `run`'s `triage` answers such a `blocked`
+event from this line. Idempotent like
 Step 3.6 — skip it when an identical `## Frame (gatekeeper)` comment already
 exists. Then:
 
@@ -842,7 +874,7 @@ which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
-2); `recut applied: #<from> → #<to>` (Step 3.7); `capability split: #<pkg> → #<new> (automatable — blocked_by written | manual — no relation)` (Step 3.4); `unexplained relation gap:
+2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
@@ -882,15 +914,16 @@ are all in the Question column — then run
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  capability tickets, the prose half of a lane split, `blocked_by`/`relates_to`
-  relations, labels (including `regression-chain`, `pipeline-capability` and
+  the prose half of a lane split, `blocked_by`/`relates_to`
+  relations, labels (including `regression-chain` and
   `lane:prose`), clarification comments,
   dependency comments, frame comments, regression-chain comments,
-  capability-split comments, lane-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
+  lane-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body.
-- **Only the automatable capability blocks.** A capability split (Step 3.4) writes `blocked_by` for the `auto:` ticket alone; `manual:` writes no relation and blocks nothing, and the split is written once.
+- **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the prose half of a lane split and an epic (both Step 2).
+- **You never apply a size-driven cut.** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); the only `recut` you apply is the lane split's.
 - **Bundle before clarify**, always.
 - **The lane comes from `scripts/gatekeeper/classify-lane.py`, never from a
   model.** One package, one lane; a `mixed` ticket is split, a bundle that

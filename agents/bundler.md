@@ -87,8 +87,29 @@ and in the ticket tracker.
    A `collision` package carries at most one `size: large` ticket; the cap applies to `collision` only.
    `effort` keeps its own ~5-ticket cap, unaffected by this rule.
 
-   When the bundler declines to bundle two `size: large` tickets under this cap and their scopes overlap, it must emit a `recut` entry for that pair; no epic is created for it — see `recut` in the output format below.
-   When the rejected large pair does not overlap, no recut is required.
+   When you decline to bundle two `size: large` tickets under this cap and their scopes overlap, you must report the pair as an `oversized` entry — see `oversized` in the output format below. You cut nothing: no slice moves between the two tickets and no epic is formed, both stay `single` packages joined by their `depends_on` edge, and the gatekeeper asks the owner.
+   When the declined large pair does not overlap, nothing is owed for it.
+
+   **An `oversized` entry carries a proposed vertical split — the observable
+   test.** An escalation with no proposal hands the owner exactly the work
+   you declined to do, so propose slices. Each slice's `observable` names
+   what a *user of the software* can do or see once that slice ships — the
+   calling developer for a library, the player for a game, the operator for
+   a tool. A slice whose `observable` names a shared class, an extracted
+   core, a refactor, a test harness, a CI step, or "the next slice can now be
+   built" is horizontal and must never be emitted. Each slice stands alone:
+   shipping only the first leaves the software usable and something is
+   observably different.
+
+   **Never fabricate a split.** When you cannot produce at least two slices
+   that pass the observable test, emit the entry with `"slices": []` and a
+   `why` that says so. The gatekeeper then asks the honest question — run the
+   pair as filed, or cut it by hand — and an invented decomposition is never
+   presented as a recommendation.
+
+   A pair the prompt marks as **already answered** (`oversized answered:
+   #a/#b — <the owner's reply>`) is never reported as `oversized` again: the
+   reply decided it, and both tickets are cut as they now stand.
 4. **Respect explicit structure.** An explicit `blocked_by` on a ticket
    *outside* the candidate list is a **dependency**: record it in
    `depends_on`, same as any other dependency found in step 3 — do not leave
@@ -116,14 +137,18 @@ First a fenced JSON block, exactly this shape:
           "why": "<one line: which capability/version/schema this package needs that #<id> introduces>",
           "evidence": "<file:symbol, or the ticket line that shows it>" }
       ],
-      "recut": [
-        { "from": <id>, "to": <id>,
-          "slice": "<the part of #from's scope that moves to #to>",
-          "why": "<one line: why this slice belongs with #to instead>" }
-      ],
       "changed_from_previous": { "ticket": <id>, "was": "<prior verdict>",
                                   "now": "<new verdict>",
                                   "changed_by": "<the named answer/change>" } }
+  ],
+  "oversized": [
+    { "tickets": [<id>, <id>],
+      "why": "<what overlaps, named by file:symbol or step>",
+      "slices": [
+        { "slice": "<one sentence>",
+          "observable": "<what a user of the software can do or see once this slice ships>",
+          "covers": [<ticket ids the slice serves>] }
+      ] }
   ]
 }
 ```
@@ -144,12 +169,13 @@ package when **both** ends are `size: large`: keep that entry, it is the
 ordering edge the gatekeeper's two-large rejection (Step 2) needs if this
 exact pair is later split back into singles.
 
-`recut` is **optional** — omit it, or leave it `[]`, for every ordinary
-package. It becomes **mandatory** for the one case Step 3 names: a `collision`
-package you declined to form because it would hold two `size: large` tickets
-whose scopes overlap. Each entry names the ticket the overlapping slice moves
-*from* and the ticket it moves *to*; the gatekeeper applies it directly, no
-epic and no confirmation round (`skills/gatekeeper/SKILL.md` Step 3.7).
+`oversized` is **optional**, a sibling of `packages` — omit it, or leave it
+`[]`, for every ordinary pass. It is owed for the one case Step 3 names: a
+`collision` package you declined to form because it would hold two
+`size: large` tickets whose scopes overlap. Both tickets still appear in
+`packages`, each as its own `single` package. `slices` is a proposal and
+nothing more: the gatekeeper posts it as a question on the ticket and moves
+both cards to Question; nobody applies it unconfirmed.
 
 `changed_from_previous` is **optional**, present only when `previous_cut`
 (see Inputs) was passed for this ticket **and** this pass's verdict differs
@@ -178,9 +204,25 @@ a mutual reference stating a sequence is not a cycle. #9 (`size: large`) and
 #14 (`size: large`) stay two `single` packages joined by `depends_on`, not
 one `collision` epic bundled to "solve" a cycle that #14's own text already
 resolves as an order. A second reading of the same two texts as "Mutually
-blocking ... one branch" produced exactly that epic — the package ran 6+
-hours and over $70 list and was still unfinished, against 47-80 minutes and
-$10-13 for comparable singles.
+blocking ... one branch" produced exactly that epic (#16). It finished —
+`ci-green` on its first attempt — but at 11 review rounds, 8 plan-critic
+verdicts and a forced second plan generation, and three defects a person
+would have seen escaped it into tickets of their own (#35, #41, #43).
+
+What a vertical split looks like, on the same work — for a pair whose overlap
+is real and not already an order, the shape an `oversized` entry owes. #16's
+own plan is the
+horizontal split: extract `FlatPlayerRig`'s ground-probe/slide/gravity core
+into a shared `RigMotionCore` both rigs drive, then `VrPlayerRig`, then
+`RigTeleport`. Nobody can see, use or test `RigMotionCore`, so a slice with
+that `observable` fails the test. The vertical split is two slices: "the VR
+rig stands, looks and moves" (`observable`: a player in a headset walks
+through the demo scene; `covers: [9]`) and "you teleport to an anchor"
+(`observable`: aiming the stick and releasing puts the player on the
+anchor; `covers: [9, 14]`). All three escaped defects — a teleport ray
+rendered as a 1 m rectangle, the demo starting in the wrong locomotion
+mode, stick-crouch not changing the visible head height — are things a
+person notices at the end of one of those slices.
 
 ## Hard rules
 
@@ -195,3 +237,6 @@ $10-13 for comparable singles.
   telling the developer what to do.
 - **Never emit a `depends_on` entry without `evidence`.** A footprint guess is
   not a dependency.
+- **Never cut a ticket.** You bundle, and you report an `oversized` pair with
+  a proposed vertical split; you move no slice from one ticket to another.
+  Never emit a horizontal slice, and never fabricate one to fill `slices`.

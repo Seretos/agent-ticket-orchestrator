@@ -1348,8 +1348,9 @@ def test_issue_forms_carry_the_evidence_rule_in_field_descriptions():
 # wrote only one of the five dependency relations the bundler reported. This
 # package (a) teaches the bundler that a ticket's own sequencing statement is
 # `depends_on`, never `collision` (R1), ships the #9/#14 worked example (R2),
-# caps a `collision` package at one `large` ticket and owes a `recut` for an
-# overlapping large pair the cap rejects (R3), (b) has the gatekeeper reject
+# caps a `collision` package at one `large` ticket (R3; the `recut` it once
+# owed for an overlapping large pair the cap rejects became an `oversized`
+# report and a Question in #41), (b) has the gatekeeper reject
 # an oversized collision package into `single`s (R4), post the recut as a
 # `## Frame (gatekeeper)` comment on both endpoints (R5), carry `previous_cut`
 # across passes with a named-change gate (R6), and (c) makes Step 3.5's
@@ -1543,7 +1544,10 @@ def test_bundler_schema_requires_size_and_caps_collision():
         "'tickets' must be an array of objects carrying 'size', not a bare "
         "array of ids"
     )
-    assert not re.search(r'"tickets":\s*\[\s*<id>', text), (
+    # the `oversized` array (#41) names a pair by bare id, by design; the
+    # rule guards the `packages` shape.
+    packages_text = re.sub(r'"oversized":\s*\[.*?\n  \]', "", text, flags=re.DOTALL)
+    assert not re.search(r'"tickets":\s*\[\s*<id>', packages_text), (
         "the old bare-id 'tickets': [<id>, ...] form must be gone -- exactly "
         "one 'tickets' shape after this change"
     )
@@ -1598,99 +1602,127 @@ def test_bundler_schema_requires_size_and_caps_collision():
     )
 
 
-def test_bundler_owes_a_recut_for_two_large_overlapping_tickets():
+def test_bundler_reports_an_oversized_pair_instead_of_cutting_it():
+    # #41: the declined overlapping two-`large` pair used to OWE a `recut` the
+    # gatekeeper applied unconfirmed. It is now reported as `oversized`, with
+    # a proposed vertical split, and nothing is cut.
     text = _read(BUNDLER)
-    sentences = re.split(r"\.\s+", text)
+    assert "recut" not in text.lower(), "the bundler no longer knows a recut at all"
 
-    overlap_sentence = None
-    for s in sentences:
-        low = s.lower()
-        if ("two" in low or "both" in low) and "large" in low and "overlap" in low:
-            overlap_sentence = s
-            break
-    assert overlap_sentence, (
-        "expected a sentence binding two/both + large + overlap -- the "
-        "two-large-and-overlapping trigger"
-    )
-    assert re.search(r"\bmust\b|\balways\b", overlap_sentence, re.IGNORECASE), (
-        f"expected an obligation verb (must/always) in: {overlap_sentence!r}"
-    )
-    assert "recut" in overlap_sentence.lower()
-
-    # negation guard: the obligation must not be softened back into an option.
-    for softener in ("optional", "may", "can"):
-        assert not re.search(rf"\b{softener}\b", overlap_sentence, re.IGNORECASE), (
-            f"the overlap sentence must not contain {softener!r}, which "
-            f"would soften the duty back into an option: {overlap_sentence!r}"
-        )
-
-    # F3 fix (test-critic round 1): "must" + "recut" co-occurring is also
-    # satisfied by a sentence stating the INVERSE duty ("must NOT emit a
-    # recut"). Reject any prohibition phrasing outright -- the obligation
-    # must be to EMIT a recut on overlap, never to withhold one.
-    assert not re.search(r"\bmust\s+not\b|\bnever\b", overlap_sentence, re.IGNORECASE), (
-        "the overlap sentence must not contain a prohibition ('must not' / "
-        f"'never'), which would state the inverse (forbidden) duty: {overlap_sentence!r}"
-    )
-
-    # F3 fix (test-critic round 4, major): 'must' + 'recut' co-occurring,
-    # with no softener and no outright prohibition, is still satisfied by a
-    # CONTRASTIVE redirect -- "must be bundled as one collision package
-    # rather than emitting a recut" -- which carries an obligation verb and
-    # 'recut' in the same sentence without tripping either guard above, yet
-    # redirects the duty elsewhere instead of negating it. Guard against
-    # contrastive phrasing that redirects the obligation away from 'recut'.
-    assert not re.search(
-        r"\b(rather than|instead of)\b[^.\n]{0,60}\brecut\b"
-        r"|\brecut\b[^.\n]{0,60}\b(rather than|instead of)\b",
-        overlap_sentence, re.IGNORECASE,
-    ), (
-        "the overlap sentence must not redirect the obligation elsewhere "
-        f"via contrastive phrasing ('rather than'/'instead of' near "
-        f"'recut'): {overlap_sentence!r}"
-    )
-    assert not re.search(r"\bnot a recut\b", overlap_sentence, re.IGNORECASE), (
-        f"the overlap sentence must not state 'not a recut': {overlap_sentence!r}"
-    )
-
-    # a separate, opposite-polarity check: the non-overlapping rejected-pair
-    # case must be stated as owing NO recut, so an implementation that
-    # demands a recut for every rejected large pair (overlapping or not)
-    # also fails this test.
-    non_overlap_sentence = None
-    for s in sentences:
-        low = s.lower()
-        if "non-overlap" in low or "no overlap" in low or "not overlap" in low:
-            non_overlap_sentence = s
-            break
-    assert non_overlap_sentence, (
-        "expected a sentence stating that the non-overlapping rejected pair "
-        "emits no recut"
-    )
-
-    # F3 fix (test-critic round 4, major): the old check let the 'no' from
-    # 'no overlap' (which is what selected this sentence in the first
-    # place) double as the negation for 'recut' too, so "Even with no
-    # overlap, a recut is still owed for a rejected large pair." passed --
-    # the exact inverse of what this assertion exists to catch. Require the
-    # negation to sit in the SAME clause as 'recut', and forbid that clause
-    # from reusing the word 'overlap' to supply it.
-    recut_clauses = [
-        c for c in re.split(r"[,;]\s*", non_overlap_sentence)
-        if re.search(r"\brecut\b", c, re.IGNORECASE)
+    overlap = [
+        s for s in re.split(r"\.\s+", text)
+        if re.search(r"\btwo\b|\bboth\b", s, re.IGNORECASE)
+        and "large" in s.lower() and "overlap" in s.lower() and "oversized" in s
     ]
-    assert recut_clauses, (
-        f"expected a clause containing 'recut' in the non-overlap sentence: {non_overlap_sentence!r}"
+    assert overlap, "expected a sentence binding two + large + overlap to `oversized`"
+    assert re.search(r"\bmust\b", overlap[0]), overlap[0]
+    assert not re.search(r"\bmust\s+not\b|\bnever\b|\boptional\b|\bmay\b", overlap[0], re.IGNORECASE), (
+        f"the duty to report must not be softened or inverted: {overlap[0]!r}"
     )
-    for clause in recut_clauses:
-        low_c = clause.lower()
-        assert "overlap" not in low_c, (
-            "the recut clause must not reuse 'overlap' to supply its own "
-            f"negation: {clause!r}"
-        )
-        assert re.search(r"\b(no|not|never|none)\b", low_c), (
-            f"expected the recut clause itself to carry its own negation: {clause!r}"
-        )
+    assert any(
+        re.search(r"does not overlap|no overlap|non-overlap", s, re.IGNORECASE)
+        and re.search(r"\bnothing\b|\bno\b", s.split("overlap", 1)[1], re.IGNORECASE)
+        for s in re.split(r"\.\s+", text)
+    ), "a non-overlapping declined pair owes nothing"
+
+    fenced = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+    block = next(b for b in fenced if '"packages"' in b)
+    over = block.split('"oversized"', 1)
+    assert len(over) == 2, "the output format must carry an `oversized` array"
+    assert block.index('"packages"') < block.index('"oversized"')
+    for key in ('"tickets"', '"why"', '"slices"', '"slice"', '"observable"', '"covers"'):
+        assert key in over[1], f"{key} missing from the oversized entry"
+    doc = next(p for p in text.split("\n\n") if p.startswith("`oversized` is"))
+    assert re.search(r"\*\*optional\*\*", doc), doc
+
+
+def test_bundler_slices_pass_the_observable_test_or_are_not_emitted():
+    text = _read(BUNDLER)
+    para = next(
+        (p for p in text.split("\n\n") if "proposed vertical split" in p and "horizontal" in p), None
+    )
+    assert para, "the observable test must be stated in the bundler"
+    flat = " ".join(para.split())
+    assert re.search(r"user of the software", flat)
+    horizontal = next(s for s in re.split(r"(?<=\.)\s+", flat) if "horizontal" in s)
+    for shape in ("shared class", "extracted core", "refactor", "test harness", "CI step",
+                  "next slice can now be built"):
+        assert shape in horizontal, f"horizontal shape {shape!r} missing: {horizontal!r}"
+    assert re.search(r"must never be emitted|must not be emitted", horizontal), horizontal
+    assert re.search(r"stands alone", flat)
+
+    fab = next((p for p in text.split("\n\n") if "Never fabricate a split" in p), None)
+    assert fab, "the no-fabrication rule must be stated"
+    fab = " ".join(fab.split())
+    assert '"slices": []' in fab and re.search(r"at least two", fab), fab
+
+    worked = _slice(text, "## Worked cuts", "## Hard rules")
+    assert "RigMotionCore" in worked and "ci-green" in worked
+    assert "unfinished" not in worked and "$70" not in worked, (
+        "#16 finished ci-green on attempt 1; the old cost claim was wrong"
+    )
+
+
+def test_gatekeeper_turns_an_oversized_pair_into_one_question():
+    text = _read(GATEKEEPER)
+    sec = _slice(
+        text, "### An oversized pair is a Question, not a cut",
+        "From here on, *package ticket* means",
+    )
+    posts = _call_spans(sec, "add_comment")
+    assert len(posts) == 1, "exactly one proposal comment is defined, on the lower id"
+    body = posts[0][1]
+    for tok in ("## Clarification needed (gatekeeper)", "**About:**", "**Decision:**",
+                "(a)", "(b)", "(c)", "*(recommended)*",
+                "<!-- gatekeeper:oversized v1", "pair:", "proposal_on:"):
+        assert tok in body, f"the proposal comment must carry {tok!r}"
+    assert re.search(r"lower ticket id", sec)
+    flat = " ".join(sec.split())
+    assert re.search(r'"slices": \[\], option \(a\) is absent', flat.replace("`", ""))
+
+    reads = _call_spans(sec, "list_comments")
+    assert reads and sec.index("list_comments(") < sec.index("add_comment("), (
+        "the idempotency read precedes the post"
+    )
+    assert re.search(r"body_max_chars\s*=\s*\d+", reads[0][1])
+    assert re.search(r"no comment newer[^.]*: post nothing and move nothing", flat), (
+        "an unanswered question is neither re-posted nor re-moved"
+    )
+
+    moves = _call_spans(sec, "update_ticket")
+    assert moves and all("Question" in m[1] and "Planned" not in m[1] for m in moves)
+    assert re.search(r"\*\*Both cards go to Question\*\*", sec)
+    assert re.search(r"[Nn]either is clarified and neither is released", flat)
+    assert re.search(r"pointer|Point the other card", sec)
+    assert "create_ticket" not in sec and "add_relation" not in sec
+
+    step1 = _slice(text, "## Step 1", "## Step 2")
+    assert "proposal_on:" in step1, "Step 1 must bring the pointer card back with its pair"
+
+    json_block = _slice(_slice(text, "## Step 2", "## Step 3 — clarify"), "```json\n", "\n```")
+    assert '"oversized"' in json_block and '"recut"' not in json_block
+
+
+def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
+    text = _read(GATEKEEPER)
+    first_para = _slice(text, "## Step 3.7", "## Step 4").split("\n\n", 1)[0]
+    assert re.search(r"lane split is the only source", first_para), first_para
+    assert re.search(r"bundler emits none", first_para), first_para
+    assert "Step 3.4" not in first_para
+    rules = text.split("## Hard rules", 1)[1]
+    assert any(
+        l.startswith("- **") and "size-driven cut" in l and "lane split" in l
+        for l in rules.splitlines()
+    ), "a Hard rule must forbid a size-driven cut and name the lane split's recut"
+
+
+def test_agents_md_records_the_oversized_question_rule():
+    text = _read(AGENTS_MD)
+    assert "with a `recut` escape hatch" not in text
+    assert "6+ hours" not in text, "the mis-recorded #16 cost sentence must be corrected"
+    para = next(p for p in text.split("\n\n") if p.startswith("**A `collision` package is capped by size"))
+    for tok in ("oversized", "observable", "Question", "gatekeeper:oversized"):
+        assert tok in para, tok
 
 
 def test_gatekeeper_rejects_oversized_collision_package():
@@ -2746,14 +2778,16 @@ def test_run_report_vocabulary_drops_review_and_not_permitted():
     assert "merge-not-permitted" not in rep
 
 
-# --- E1: capability splits (agent-ticket-orchestrator#33) ------------------
-# An acceptance criterion that needs a pipeline capability the package's own PR
-# run cannot execute is split into its own ticket. The clarifier REPORTS it
-# (frame key `needs_pipeline_support`), the gatekeeper WRITES it (Step 3.4),
-# `run` is unchanged. Only the automatable half blocks the package (owner's
-# Q1 answer, option b). Prose executed by an LLM: these assertions pin
-# structure and bind outcomes to their triggers by proximity/sentence scope;
-# they do not simulate the clarifier's judgement.
+# --- G1: an unprovable criterion is struck and recorded (#40) ---------------
+# Supersedes E1 (agent-ticket-orchestrator#33), which promoted such a clause
+# to a `pipeline-capability` ticket in a gatekeeper Step 3.4 and blocked the
+# package on its `auto:` flavour. That branch is deleted as one seam: the
+# clarifier REPORTS the clause (`unprovable_here`) and writes the automatable
+# residue into `ac:`, the gatekeeper RECORDS it in the frame comment, triage
+# ANSWERS a `blocked` event about it, and nothing is ever created or made to
+# wait. Prose executed by an LLM: these assertions pin structure and bind
+# outcomes to their triggers by sentence scope; they do not simulate the
+# clarifier's judgement.
 
 def _clarifier_step_1d() -> str:
     return _slice(_read(CLARIFIER), "**1d.", "\n2. **Read the code")
@@ -2763,10 +2797,6 @@ def _clarifier_hatch_section() -> str:
     return _slice(
         _read(CLARIFIER), "## When STATUS: CLEAR is not available", "## Worked frames"
     )
-
-
-def _gatekeeper_step_3_4() -> str:
-    return _slice(_read(GATEKEEPER), "## Step 3.4", "## Step 3.5")
 
 
 def _sentences(text: str) -> list:
@@ -2781,293 +2811,168 @@ def _blocks(text: str) -> list:
 
 _NEGATION = re.compile(r"\bnever\b|\bnot\b|\bnon-|\bexclud|\bexcept\b", re.IGNORECASE)
 
+_REMOVED_VOCABULARY = (
+    "needs_pipeline_support", "pipeline-capability", "Step 3.4",
+    "Capability split", "gatekeeper:capability", "capability_ticket",
+)
 
-def test_clarifier_frame_block_carries_needs_pipeline_support():
+
+def test_capability_split_vocabulary_is_gone():
+    for path in (CLARIFIER, GATEKEEPER, TRIAGE):
+        text = _read(path)
+        for token in _REMOVED_VOCABULARY:
+            assert token not in text, f"{token!r} still in {path}"
+    clar = _read(CLARIFIER)
+    scopes = {
+        "frame block": _slice(clar, "<!-- clarifier:frame v1", "-->"),
+        "step 1d": _clarifier_step_1d(),
+        "hatch section": _clarifier_hatch_section(),
+        "worked frames": _slice(clar, "## Worked frames", "## Hard rules"),
+    }
+    for name, scope in scopes.items():
+        for token in ("auto:", "manual:"):
+            assert token not in scope, f"{token!r} still in the clarifier's {name}"
+    row = next(l for l in _read(AGENTS_MD).splitlines() if l.startswith("| `gatekeeper` |"))
+    assert "capability" not in row.lower(), row
+
+
+def test_clarifier_frame_block_carries_unprovable_here():
     text = _read(CLARIFIER)
     block = _slice(text, "<!-- clarifier:frame v1", "-->")
-    line = next(
-        (l for l in block.splitlines() if l.startswith("needs_pipeline_support:")), None
-    )
-    assert line, "frame block must carry a `needs_pipeline_support:` line"
-    for token in ("none", "auto:", "manual:"):
-        assert token in line, f"{token!r} missing from {line!r}"
+    line = next((l for l in block.splitlines() if l.startswith("unprovable_here:")), None)
+    assert line, "frame block must carry an `unprovable_here:` line"
+    assert re.match(r"unprovable_here:\s*none\s*\|\s*<", line), line
     out = _slice(text, "## Output format", "## When STATUS: CLEAR is not available")
-    # the bullet/paragraph that documents the key (not the frame block itself)
     docs = [
         b for b in _blocks(out)
-        if "needs_pipeline_support" in b and "clarifier:frame v1" not in b
+        if "unprovable_here" in b and "clarifier:frame v1" not in b
     ]
-    assert docs, "the key needs its own documenting bullet or paragraph"
+    assert docs, "the key needs its own documenting paragraph"
     assert any(
         re.search(r"\brepeatable\b", b)
         and not re.search(r"\bnot repeatable\b|non-repeatable", b)
         and re.search(r"both\s+statuses|CLEAR\s+and\s+NEEDS_INPUT", b)
         for b in docs
-    ), "one bullet must state the key is repeatable AND emitted on both statuses"
+    ), "one paragraph must state the key is repeatable AND emitted on both statuses"
+    assert any(re.search(r"nothing is created|no ticket", b, re.IGNORECASE) for b in docs), (
+        "the documenting paragraph must say the report creates nothing"
+    )
 
 
-def test_clarifier_capability_detection_is_cheap_and_bounded():
+def test_clarifier_detection_stays_cheap_and_searches_nothing():
     s = _clarifier_step_1d()
     assert ".github/workflows" in s
     assert "runs-on" in s and "matrix" in s, "step 1d must read runs-on and the matrix"
-    for shape in ("another OS", "shell", "artifact", "external service", "person"):
+    for shape in ("another OS", "shell", "artifact", "external service", "person", "release-only"):
         assert shape.lower() in s.lower(), f"flaggable shape {shape!r} missing"
-    # cost cap: exactly one list_tickets call in the whole step
-    assert s.count("list_tickets") == 1, (
-        f"step 1d must mention list_tickets exactly once, got {s.count('list_tickets')}"
-    )
-    # ... and that one mention must instruct the call, not forbid it
+    assert "list_tickets" not in s, "the capability look-up is gone; step 1d searches nothing"
+    assert not re.search(r"depends_on:\s*#", s), "step 1d no longer routes anything into depends_on"
     assert any(
-        "list_tickets" in x
-        and re.search(r"\bcall\b|\bsearch|\blook", x, re.IGNORECASE)
-        and re.search(r"\bone\b|\bsingle\b|\bonce\b", x, re.IGNORECASE)
-        and not re.search(r"\bper\b|\beach\b|\bevery\b", x, re.IGNORECASE)
-        and not _NEGATION.search(x)
+        "unprovable_here" in x and "none" in x
+        and re.search(r"no shape|names no|not name|does not|nothing", x, re.IGNORECASE)
         for x in _sentences(s)
-    ), "step 1d must affirmatively instruct one list_tickets call, not one per item"
-    # detection fires only on a criterion that names a shape
-    assert any(
-        re.search(r"\bnames\b|\bnamed\b", x)
-        and re.search(r"another OS|shell|artifact|external service|person", x, re.IGNORECASE)
-        and not _NEGATION.search(x)
-        for x in _sentences(s)
-    ), "an affirmative (non-negated) sentence must tie `names` to the flaggable shapes"
-    # falls back to none when no shape is named
-    assert any(
-        "needs_pipeline_support" in x and "none" in x
-        and re.search(r"otherwise|no shape|names no|not name|does not|nothing", x, re.IGNORECASE)
-        for x in _sentences(s)
-    ), "the no-shape fallback to `needs_pipeline_support: none` must be stated"
-    # misread::F2: an existing ticket routes to depends_on ONLY for the
-    # automatable kind; a manual: capability must never become a blocker.
-    manual = [x for x in _sentences(s) if "manual" in x.lower() and "depends_on" in x]
-    assert manual, "step 1d must say what happens to an existing manual: capability ticket"
-    for x in manual:
-        assert re.search(
-            r"\b(never|not)\b[^.]{0,80}depends_on|depends_on[^.]{0,80}\b(never|not)\b",
-            x, re.IGNORECASE,
-        ), f"a manual: capability must not be routed into depends_on: {x!r}"
-    auto = [
-        x for x in _sentences(s)
-        if "auto" in x.lower() and "depends_on" in x and not _NEGATION.search(x)
-    ]
-    assert auto, (
-        "an existing automatable capability ticket must route to depends_on "
-        "in an affirmative (non-negated) sentence"
-    )
-    # the "Do not propose new tickets" rule must allow this report
+    ), "the no-shape fallback to `unprovable_here: none` must be stated"
     rules = _slice(_read(CLARIFIER), "## Hard rules", "\n- **Never read outside")
-    amended = [
-        x for x in _sentences(rules)
-        if "needs_pipeline_support" in x
-        and re.search(r"\bmay\b|\ballow|\bexcept|\breport|\bemit", x, re.IGNORECASE)
-        and not re.search(r"\bnever\b|\bnot emit|\bno exception", x, re.IGNORECASE)
-    ]
-    assert amended, (
-        "the 'Do not propose new tickets' rule must be amended to permit/report "
-        "needs_pipeline_support, with no `never` negating it"
+    stay = next(b for b in _blocks(rules) if "Stay inside the package" in b)
+    assert not re.search(r"\bmay emit\b|\bone exception\b", stay), (
+        f"'Do not propose new tickets' has no exception any more: {stay!r}"
     )
+    budget = next(b for b in _blocks(_read(CLARIFIER).split("## Hard rules", 1)[1])
+                  if "list_tickets" in b)
+    assert "1d" not in budget, f"no list_tickets budget is left for step 1d: {budget!r}"
 
 
-def test_clarifier_hatch_is_closed_for_a_capability_ticket():
-    hatch = _clarifier_hatch_section()
-    closed = [x for x in _sentences(hatch) if "pipeline-capability" in x]
-    assert closed, "the hatch section must name the pipeline-capability label"
-    refusal = r"closed|never|not legal|refus|not available"
-    # symptom half: trigger and refusal verb in ONE sentence
+def test_clarifier_writes_the_residue_and_stays_clear():
+    s = _clarifier_step_1d()
+    residue = [x for x in _sentences(s) if "residue" in x.lower()]
+    assert residue, "step 1d must state the residue rule"
+    assert any("`ac:`" in x for x in residue), "the residue goes into `ac:`"
     assert any(
-        re.search(r"none:ci|none:test", x) and re.search(refusal, x, re.IGNORECASE)
-        and not re.search(r"stays open|remains open|\bis open\b|may take", x, re.IGNORECASE)
-        for x in closed
-    ), "a sentence must refuse `symptom: none:ci|none:test` for pipeline-capability"
-    # measurement half: separately refused
+        "as-filed" in x and re.search(r"\bnever\b|\bnot\b", x) for x in _sentences(s)
+    ), "`ac:` is never `as-filed` when the residue is the only AC"
     assert any(
-        re.search(r"measurement:\s*n/a", x) and re.search(refusal, x, re.IGNORECASE)
-        for x in closed
-    ), "a sentence must refuse `measurement: n/a` for pipeline-capability"
-    assert any(
-        re.search(r"own PR run|its own PR", x, re.IGNORECASE)
-        and re.search(r"\bmust\b|\brequire|\bdemonstrat|\bexecut", x, re.IGNORECASE)
-        and not re.search(
-            r"need not|\bnot (required|needed)|suffices|sufficient|waive|\boptional",
-            x, re.IGNORECASE,
-        )
-        for x in closed
-    ), "the AC must be required to be demonstrated by the ticket's own PR run"
-    # misread::F1: the closure holds for EVERY generated capability ticket,
-    # manual: too -- not only the auto: one.
-    assert any(
-        "manual" in x and "pipeline-capability" in x
-        and re.search(refusal, x, re.IGNORECASE)
-        and not re.search(r"unaffected|no such label|does not apply|not apply", x, re.IGNORECASE)
-        for x in _sentences(hatch)
-    ), "one sentence must extend the hatch closure to the manual: capability ticket"
-    # misread::F3: the second hatch location -- the frame block's own
-    # `symptom:` line -- must state the closure too.
-    out = _slice(_read(CLARIFIER), "## Output format", "### Frame")
-    assert any(
-        "symptom" in x and "pipeline-capability" in x
-        and re.search(refusal, x, re.IGNORECASE)
-        and not re.search(r"unaffected|does not apply|not apply|\bsee\b", x, re.IGNORECASE)
-        for x in _sentences(out)
-    ), "the frame block's symptom line must itself state the closure in one sentence"
+        re.search(r"never the performing|not the performing", x) for x in _sentences(s)
+    ), "the residue is the artifact, never the performing of the check"
+    for scope in (s, _clarifier_hatch_section()):
+        assert any(
+            "NEEDS_INPUT" in x and re.search(r"\bnever\b", x) for x in _sentences(scope)
+        ), "a struck clause never produces NEEDS_INPUT"
+        assert "CLEAR" in scope
 
 
-def test_clarifier_ships_the_capability_worked_frames():
+def test_clarifier_ships_the_struck_clause_worked_frames():
     text = _slice(_read(CLARIFIER), "## Worked frames", "## Hard rules")
     bullets = text.split("\n- **")
-    pos = [b for b in bullets if "#347" in b]
-    assert pos, "a worked frame for agent-project-issues#347 is required"
-    pos = pos[0]
-    a = pos.find("needs_pipeline_support: auto:")
-    m = pos.find("needs_pipeline_support: manual:")
-    assert a != -1 and m != -1, "the #347 frame must carry an auto: and a manual: line"
-    assert pos.rfind("STATUS: CLEAR") > max(a, m), (
-        "the #347 frame must end STATUS: CLEAR after both values"
+    for tag in ("agent-project-issues#347", "lib-python-harness#24"):
+        hit = [b for b in bullets if tag in b.split("**", 1)[0]]
+        assert hit, f"a worked frame for {tag} is required"
+        b = hit[0]
+        k = b.find("`unprovable_here: ")
+        assert k != -1 and "unprovable_here: none" not in b, b
+        ac = re.search(r"`ac: ([^`]+)`", b)
+        assert ac and ac.group(1).strip() != "as-filed", f"{tag} must carry a residue ac: {b!r}"
+        assert b.rfind("STATUS: CLEAR") > k, f"{tag} must end STATUS: CLEAR after the struck clause"
+        assert re.search(r"no\s+ticket\s+is\s+created", b, re.IGNORECASE), b
+        assert "NEEDS_INPUT" not in b
+    assert bullets and any(
+        "`unprovable_here: none`" in b and "STATUS: CLEAR" in b for b in bullets
+    ), "a separate negative frame must resolve to `unprovable_here: none`"
+
+
+def test_gatekeeper_records_the_struck_clause_in_the_frame_comment():
+    text = _read(GATEKEEPER)
+    step3 = _slice(text, "## Step 3 — clarify each package", "## Step 3.5")
+    assert "unprovable_here" in step3
+    rendered = "Not proven by this package: <clause>"
+    assert rendered in step3, "Step 3 defines the rendering once"
+    step4 = _slice(text, "## Step 4", "## Step 5")
+    trigger = next(x for x in _sentences(step4) if x.startswith("Post the frame comment"))
+    assert "unprovable_here" in trigger, f"Step 4 must post the frame comment for it: {trigger!r}"
+    body = _slice(step4, "\n## Frame (gatekeeper)\n", "```")
+    assert rendered in body, "the struck-clause line sits inside the frame comment body"
+    for sec in (_slice(text, "## Step 3.6", "## Step 3.7"), _slice(text, "## Step 3.7", "## Step 4")):
+        assert "Not proven by this package:" in sec
+    assert "struck (unprovable here)" in _slice(text, "## Step 5", "## Hard rules")
+
+
+def test_gatekeeper_creates_nothing_for_an_unprovable_criterion():
+    text = _read(GATEKEEPER)
+    assert len(_call_spans(text, "create_ticket")) == 2, (
+        "exactly two create_ticket call sites remain: the lane split and the epic"
     )
-    neg = [b for b in bullets if "needs_pipeline_support: none" in b and "#347" not in b]
-    assert neg, "a separate negative frame must resolve to `needs_pipeline_support: none`"
-    for b in neg:
-        assert "needs_pipeline_support: auto:" not in b, b
-        assert "needs_pipeline_support: manual:" not in b, b
-
-
-def test_gatekeeper_creates_the_capability_ticket_idempotently():
-    s = _gatekeeper_step_3_4()
-    lc = _call_spans(s, "list_comments")
-    ct = _call_spans(s, "create_ticket")
-    cm = _call_spans(s, "add_comment")
-    assert lc and ct and cm, "Step 3.4 must read comments, create a ticket and post a comment"
-    assert lc[0][0] < ct[0][0], "the idempotency read must precede create_ticket"
-    m = re.search(r"body_max_chars\s*=\s*(\d+)", lc[0][1])
-    assert m and int(m.group(1)) <= 600, lc[0][1]
-    # the comment is DEFINED in the add_comment call, not merely referenced
-    body = " ".join(c[1] for c in cm)
-    for tok in ("## Capability split (gatekeeper)", "gatekeeper:capability v1", "capability_ticket:"):
-        assert tok in body, f"the add_comment body must carry {tok!r}"
-    for c in ct:
-        assert 'template="task"' in c[1], c[1]
-        # misread::F1: every generated capability ticket carries the label
-        # the hatch closure reads.
-        assert "pipeline-capability" in c[1], f"unlabelled capability ticket: {c[1]}"
-        assert "custom_fields" not in c[1], "must land in Backlog"
-    # the ticket body is defined in the create_ticket call
-    assert any("### Goal" in c[1] and "### Acceptance" in c[1] for c in ct), (
-        "the create_ticket body must carry ### Goal and ### Acceptance"
-    )
-    ll = _call_spans(s, "list_labels")
-    cl = _call_spans(s, "create_label")
-    assert ll and cl and ll[0][0] < cl[0][0], "list_labels must precede create_label"
-
-
-def test_gatekeeper_already_split_capability_skips_recut_and_comment():
-    s = _gatekeeper_step_3_4()
-    item1 = _slice(s, "1. **Idempotency first.**", "2. **Label.**")
-    sent = [x for x in _sentences(item1) if "already split" in x]
-    assert sent, "the already-split sentence must exist in item 1"
-    x = sent[0]
-    assert "recut" in x, x
-    assert "split comment" in x, x
-    assert not re.search(r"create\s+nothing", x, re.IGNORECASE), x
-    assert re.search(r"skip items?\s+2", x), x
-    tail = item1[item1.index(x):]
-    assert "capability_ticket:" in tail and "deps" in tail and "auto:" in tail, tail
-
-
-def test_gatekeeper_blocks_only_on_the_automatable_capability():
-    s = _gatekeeper_step_3_4()
-    assert "add_relation(" not in s, "Step 3.4 reuses Step 3.5's write, no second path"
-    for x in _sentences(s):
-        if "blocked_by" in x and re.search(r"\b(record|write|writes|add|adds)\b", x, re.IGNORECASE):
-            assert "Step 3.5" in x or _NEGATION.search(x), (
-                f"Step 3.4 must not describe its own relation write: {x!r}"
-            )
-    step35 = _slice(_read(GATEKEEPER), "## Step 3.5", "## Step 3.6")
+    step35 = _slice(text, "## Step 3.5", "## Step 3.6")
     deps = _slice(step35, "deps =", "for each raw target")
-    assert "Step 3.4" in deps, "Step 3.5's `deps` union must name Step 3.4"
-    assert re.search(r"∪|union", deps), "Step 3.4's ids must be unioned into `deps`"
-    assert re.search(r"\bauto\b|\bauto:|automatable", deps, re.IGNORECASE), (
-        "only the automatable ids join `deps`"
-    )
-    for mm in re.finditer(r"manual", deps, re.IGNORECASE):
-        assert _NEGATION.search(deps[max(0, mm.start() - 60):mm.end() + 60]), (
-            f"the deps clause must not union manual: capabilities: {deps!r}"
-        )
-    k = deps.index("Step 3.4")
-    assert not _NEGATION.search(deps[max(0, k - 60):k + 120]), (
-        f"Step 3.4's ids must be included, not excluded: {deps!r}"
-    )
-    manual = [x for x in _sentences(s) if "manual:" in x and "relation" in x]
-    assert manual, "Step 3.4 must state that manual: writes no relation"
-    for x in manual:
-        assert re.search(r"\bno relation\b|\bnever\b[^.]*relation|writes no", x, re.IGNORECASE), x
-        assert not re.search(r"\bno\b[^.]{0,40}\bnot\b|\bnot\b[^.]{0,40}\bno\b", x), (
-            f"double negation: {x!r}"
-        )
-        assert not re.search(r"\bmay write\b", x), x
+    assert "capab" not in deps.lower() and "unprovable" not in deps, deps
+    rules = text.split("## Hard rules", 1)[1]
+    rule = [l for l in rules.splitlines() if l.startswith("- **") and "unprovable" in l.lower()]
+    assert rule, "a Hard rule must cover the struck criterion"
+    for word in ("no ticket", "no relation", "no label"):
+        assert word in rule[0], f"{word!r} missing from {rule[0]!r}"
 
 
-def test_gatekeeper_capability_split_reuses_the_recut_mechanism():
-    s = _gatekeeper_step_3_4()
-    assert "recut" in s and "Step 3.7" in s
-    assert "Additional requirement" in s or "Non-goal" in s
-    assert any(
-        "recut" in x and re.search(r"\bto\b[^.]*\bslice\b", x)
-        and not _NEGATION.search(x)
-        for x in _sentences(s)
-    ), "Step 3.4 must have an affirmative sentence emitting a recut {from,to,slice} entry"
-    sec = _slice(_read(GATEKEEPER), "## Step 3.7", "## Step 4")
-    first_para = sec.split("\n\n", 1)[0]
-    tie = [
-        x for x in _sentences(first_para)
-        if "Step 3.4" in x and "recut" in x and re.search(r"\bcreated\b|\bcreates\b", x)
-        and "`to`" in x
-    ]
-    assert tie, (
-        "Step 3.7's first paragraph must admit Step 3.4's recut whose `to` was created this pass"
-    )
-    for x in tie:
-        assert not _NEGATION.search(x), f"admission must be affirmative: {x!r}"
+def test_triage_answers_a_blocked_event_about_struck_evidence():
+    text = _read(TRIAGE)
+    step = _slice(text, "\n6. **", "## Output format")
+    assert "Not proven by this package:" in step and "## Frame (gatekeeper)" in step
+    answered = [x for x in _sentences(step) if "STATUS: ANSWERED" in x]
+    assert answered, "step 6 must end STATUS: ANSWERED"
+    for x in answered:
+        assert not _NEGATION.search(x), f"the ANSWERED outcome must be affirmative: {x!r}"
+    assert "STATUS: ESCALATE" not in step
+    worked = _slice(text, "## Worked answers", "## Hard rules")
+    b = next(b for b in _blocks(worked) if "Not proven by this package:" in b)
+    assert "STATUS: ANSWERED" in b and "ESCALATE" not in b, b
 
 
-def test_gatekeeper_reports_the_capability_split():
-    step5 = _slice(_read(GATEKEEPER), "## Step 5", "## Hard rules")
-    i = step5.index("capability split:")
-    entry = step5[i:i + 350]
-    assert re.search(
-        r"automatable.{0,60}blocked_by.{0,60}manual.{0,60}no relation", entry, re.DOTALL
-    ), f"Step 5 must map automatable -> blocked_by and manual -> no relation, in order: {entry!r}"
-    rules = _read(GATEKEEPER).split("## Hard rules", 1)[1]
-    writes = _slice(rules, "Your writes are:", "moves")
-    assert "pipeline-capability" in writes
-    assert re.search(r"capability[- ]split comments", writes)
-    assert re.search(r"capability tickets", writes)
-    bullets = [l for l in rules.splitlines() if l.startswith("- **") and "capability" in l.lower()]
-    assert bullets, "a Hard rule must cover the capability split"
-    assert any(
-        "manual" in b and "blocked_by" in b and not re.search(r"out of scope|never create", b)
-        and re.search(r"\bno relation\b|writes no|no `?blocked_by`?|never[^.]*relation", b, re.IGNORECASE)
-        for b in bullets
-    ), "the Hard rule must say only the automatable capability blocks (manual writes no blocked_by)"
-
-
-def test_agents_md_records_the_capability_split():
+def test_agents_md_records_the_struck_criterion_rule():
     text = _read(AGENTS_MD)
-    heading = "### A capability the PR cannot execute is its own ticket"
+    assert "A capability the PR cannot execute is its own ticket" not in text
+    heading = "### A criterion the PR run cannot prove is struck and recorded, never a ticket"
     assert heading in text
     sec = text.split(heading, 1)[1].split("\n### ", 1)[0]
-    assert "needs_pipeline_support" in sec and "Step 3.4" in sec
-    manual = [x for x in _sentences(sec) if "manual" in x.lower() and "relation" in x.lower()]
-    assert manual, "the Q1(b) rationale (manual gets no relation) must be one sentence"
-    assert any(
-        re.search(r"\bno relation\b|writes no relation|never[^.]*relation", x, re.IGNORECASE)
-        and not re.search(r"\balso\b[^.]*\brelation\b", x, re.IGNORECASE)
-        for x in manual
-    ), manual
-    assert "pipeline-capability" in sec
-    row = next(l for l in text.splitlines() if l.startswith("| `gatekeeper` |"))
-    assert "pipeline-capability" in row
-    assert re.search(r"capability[- ]split", row) and re.search(r"capability tickets?", row), row
+    for token in ("unprovable_here", "residue", "Not proven by this package:", "lib-python-harness"):
+        assert token in sec, token
+    assert re.search(r"must not read[^.]*gate", sec), "the release layer must not read it as a gate"
 
 
 # --- F1: triage's test-evidence rule (agent-ticket-orchestrator#35) ---------

@@ -76,6 +76,21 @@ need is in the prompt.
    never advise extracting a script — a decidable part would have been cut
    into its own code ticket before the run.
 
+6. **A question about evidence the package was never asked to produce is
+   already answered.** The gatekeeper strikes an acceptance clause the
+   package's own PR run cannot prove — a real run against an external
+   service, another OS, a release-only job, an installed artifact, a real
+   shell, a person's check — and records it on the package ticket as a
+   `Not proven by this package:` line in a `## Frame (gatekeeper)` comment;
+   the clause itself stays in the ticket body. When the `blocked` question is
+   that the package cannot produce its acceptance evidence and the clause it
+   names matches such a line, end `STATUS: ANSWERED`: the package proceeds
+   without that evidence, its acceptance criterion is the frame comment's
+   `Acceptance criterion:` line, and the grounding you cite is the frame
+   line itself. This is the last line of defence, not the fix — the frame
+   comment is meant to keep the question from being raised at all. With no
+   such frame line on the ticket, the ordinary test of step 3 applies.
+
 ## Output format (load-bearing — `run` parses the last line and, on
 `ANSWERED`, the chosen option)
 
@@ -92,9 +107,10 @@ Then the **last line** is exactly one of:
 
 ## Worked answers
 
-One instance of the rule in step 5, kept short so a reader can see its shape.
+One instance each of the rules in steps 5 and 6, kept short so a reader can see their shape.
 
 - A `blocked` event asks whether to pin, with a string-presence test in `tests/test_pipeline_contract.py`, the wording of a new stagnation check in the process-ticket skill (#122). Answer: extract the decidable stagnation check into a script and give that script real behaviour tests. The wording in skills/process-ticket/SKILL.md carries no test; its correctness is verified by a real run or by the reviewer, and the evidence kind is `none`, not a `driving-test`. STATUS: ANSWERED — extract the check into a script with behaviour tests, leave the prose untested — a pin test proves the string exists, not the behaviour.
+- A `blocked` event says the plan cannot satisfy "a real run against the real `claude` CLI (no fake)" inside the PR's own run, and asks whether to accept a red PR run or stop (`lib-python-harness#27` shape). The package ticket carries a `## Frame (gatekeeper)` comment with `Not proven by this package: a real run against the real claude CLI (no fake)`. STATUS: ANSWERED — proceed without the live run; build and review against the frame comment's acceptance criterion — the frame comment already struck that clause for this package.
 
 ## Hard rules
 

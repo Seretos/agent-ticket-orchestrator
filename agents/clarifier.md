@@ -154,31 +154,44 @@ label one heading level deeper than a hand-written `##`.
    tools. Report each one as a `premise:` line in the frame block (see
    Output format); `premise: none` when the sweep finds nothing.
 
-   **1d. Notice a capability the package's own PR run cannot execute.** An
-   acceptance criterion can demand a check that no CI job of the package's own
-   PR will ever run: the criterion is met on paper, the PR goes `ci-green`, and
-   the release that follows fails on the very procedure the criterion named.
-   `agent-project-issues#347` (a release-only job, a Windows shell) is the case.
+   **1d. Notice a criterion the package's own PR run cannot prove.** An
+   acceptance criterion can demand evidence that no CI job of the package's own
+   PR will ever produce: *"a real run against the real `claude` CLI (no
+   fake)"*, *"verified in a real Windows shell"*, *"a person confirms the
+   released plugin loads on a fresh machine"*. Such clauses arrive from many
+   ticket-writing agents and are absorbed here, not sent back. Left standing,
+   one of two things happens: the PR goes `ci-green` and is read as proof of
+   something it never ran (`agent-project-issues#347`), or the planner tries
+   to satisfy the clause, the plan-critic calls its absence a gap, and the
+   package ends `blocked` (`lib-python-harness#27`).
+
    Keep the detection cheap. Read the workflow trigger blocks under
    `.github/workflows` **and** each job's `runs-on` / `strategy.matrix`, plus the
    project's test configuration — the trigger block alone is not enough, because
    a workflow can run on every PR and still cover one job on one OS. Flag a
    criterion only when it names one of six shapes: a release-only or
    manually-triggered job, another OS than the PR run covers, a real shell, a
-   built or installed artifact, an external service, or a person who must
-   perform the check. A criterion that names no shape gets
-   `needs_pipeline_support: none`; do not build a better detector than that.
+   built or installed artifact, a real run against a real external service, or
+   a person who must perform the check. A criterion that names no shape gets
+   `unprovable_here: none`; do not build a better detector than that.
 
-   When a criterion is flagged, make a single `list_tickets(project_id,
-   status="open", search=<2–4 nouns of the capabilities>, omit_body=True,
-   limit=10)` call to look for an existing open ticket, whatever the number
-   of flagged criteria. When it finds one for an `auto:` capability,
-   report it as `depends_on: #<id>` with `needs_pipeline_support: none` and
-   propose no new ticket. An existing ticket for a `manual:` capability is
-   never routed into `depends_on:`, because nothing waits on a person's check.
-   With no existing ticket, report `needs_pipeline_support: auto:<capability>`
-   when an automated job could ever run the check, else
-   `needs_pipeline_support: manual:<check only a person can perform>`.
+   **A flagged clause is struck, and only reported.** Emit it as
+   `unprovable_here: <the clause>`, one line per clause. The gatekeeper
+   records it in the `## Frame (gatekeeper)` comment as something this package
+   does not prove. No ticket is proposed for it, no dependency is reported
+   for it, nothing is searched for and nothing waits on it: whether the check
+   is ever automated or performed is the owner's decision, filed by the owner
+   as a ticket of its own if they want it.
+
+   **Write the clause's automatable residue into `ac:`.** The residue is the
+   artifact that makes the check possible for whoever performs it later — the
+   marked live test exists and runs with one command, the script exists, the
+   procedure is written down where the ticket says — never the performing of
+   it. When striking the clause leaves the ticket with no buildable acceptance
+   criterion at all, the residue *is* the acceptance criterion, and `ac:` is
+   never `as-filed` for that ticket. A struck clause never produces
+   `NEEDS_INPUT`: the absence of a provable half is not a question, and the
+   package ends `STATUS: CLEAR` on its ordinary merits.
 2. **Read the code the package touches.** Serena first (`find_symbol`,
    `get_symbols_overview`, `find_referencing_symbols`, `find_declaration`,
    `find_implementations`), then `Glob`/`Grep`/`Read` under `local_path`.
@@ -249,7 +262,7 @@ label one heading level deeper than a hand-written `##`.
 ## Package #<id> — <title>
 
 <!-- clarifier:frame v1
-symptom: <one line, user-visible> | none:<refactor|docs|ci|infra|test|chore|prose> — none:ci|test is closed for a pipeline-capability ticket
+symptom: <one line, user-visible> | none:<refactor|docs|ci|infra|test|chore|prose>
 measurement: symptom | internal:<quantity> | n/a
 ac: as-filed | <one line: the symptom-level acceptance criterion you wrote>
 prior_attempts: none | #<id>[,#<id>…]
@@ -257,7 +270,7 @@ chain: none | regression-chain:#<id>,#<id>[,…]
 reframe: none | <one line: how the package is implemented instead, incl. the non-goal>
 depends_on: none | #<id>[,#<id>…]
 premise: none | <one capability, version, schema or file this plan assumes but nothing here has verified>
-needs_pipeline_support: none | auto:<capability an automated job could run> | manual:<check only a person can perform>
+unprovable_here: none | <the criterion clause this package's own PR run cannot produce evidence for>
 -->
 
 ### Frame
@@ -287,10 +300,12 @@ capability, one this ticket's plan assumes but nothing here has verified;
 it accumulates rather than replacing a prior line the way `symptom:`/`ac:`
 do.
 
-`needs_pipeline_support:` is repeatable, one line per flagged criterion, and
-is emitted on both statuses like `depends_on:`, because the gatekeeper needs it
-from a `NEEDS_INPUT` package too. You only report it; the gatekeeper creates
-the ticket (Step 3.4).
+`unprovable_here:` is repeatable, one line per struck clause (Protocol 1d),
+and is emitted on both statuses like `depends_on:`, because the gatekeeper
+needs it from a `NEEDS_INPUT` package too. It covers the whole family alike —
+a real external service, another OS, a release-only job, a built or installed
+artifact, a real shell, a person's check. You only report it; the gatekeeper
+writes it into the frame comment, and nothing is created for it.
 
 **The human who answers does not have the code open.** They wrote the
 ticket — or, increasingly, an agent wrote it from a test run and they have
@@ -381,17 +396,11 @@ the intent.
   ticket does not name it — and if you cannot name it from ticket, comments
   and code, that is a question (`### Q<n>`: "which user-visible behaviour is
   this about?"), never a `none:`.
-- **The hatch is closed for a `pipeline-capability` ticket**, the ticket the
-  gatekeeper generates for a capability split (Step 3.4). `none:ci` and
-  `none:test` are refused for a `pipeline-capability` ticket. So is
-  `measurement: n/a` for a `pipeline-capability` ticket: a CI ticket whose
-  finish line is that a step exists in a workflow file is exactly what #348
-  delivered, green and broken. The acceptance criterion of an `auto:`
-  `pipeline-capability` ticket must be demonstrated by its own PR run — the
-  capability executes there, and a run that skipped it does not count. The
-  closure covers the `manual:` `pipeline-capability` ticket as well, closed
-  to `none:ci|test` and `measurement: n/a` alike; its criterion names the
-  check a person performs and where the result is recorded, not a job.
+- `unprovable_here:` is not `none` ⇒ **you strike the clause and write the
+  residue**, you do not ask (Protocol 1d). `ac:` carries the automatable
+  residue, never `as-filed` when the struck clause was the ticket's only
+  acceptance criterion, and the status stays `CLEAR` — never `NEEDS_INPUT`
+  for the absence of a provable half.
 - A **new capability** is not a hatch case: its symptom is the behaviour the
   user gains, and `measurement: symptom` is the ordinary answer.
 
@@ -436,18 +445,32 @@ the intent.
   that a release-only publish job runs green in a real Windows shell, and that
   someone confirms the released plugin loads on a fresh machine. The trigger
   block of `lint.yml` (`on: pull_request`) shows the publish job never runs in
-  the PR, and no `list_tickets` hit exists for either capability →
+  the PR →
   `symptom: a release fails on the test procedure its criterion demanded`,
-  `measurement: symptom`, `ac: as-filed`,
-  `needs_pipeline_support: auto:a PR-time job that runs the release publish
-  procedure in a Windows shell`,
-  `needs_pipeline_support: manual:confirm the released plugin loads on a
-  fresh machine` — ends `STATUS: CLEAR`. The gatekeeper writes the tickets;
-  only the `auto:` one blocks the package.
+  `measurement: symptom`,
+  `ac: the publish procedure is one script the release job calls, and the
+  script's own behaviour tests run in the PR`,
+  `unprovable_here: the release-only publish job runs green in a real
+  Windows shell`,
+  `unprovable_here: someone confirms the released plugin loads on a fresh
+  machine` — ends `STATUS: CLEAR`. Both clauses are struck and recorded; no
+  ticket is created for either and nothing waits on them.
+- **The `lib-python-harness#24` shape** — a feature (an optional `task`
+  argument for `resolve()`) whose acceptance section also demands "a real run
+  against the real `claude` CLI (no fake)". The PR workflow has no CLI and no
+  credentials, so its own run can never produce that evidence →
+  `symptom: resolve() cannot be given a task`, `measurement: symptom`,
+  `ac: resolve(task=…) passes the task through, shown by the suite against
+  the fake; a marked live test for the same call exists and runs with one
+  command for whoever has the CLI`,
+  `unprovable_here: a real run against the real claude CLI (no fake)` — ends
+  `STATUS: CLEAR`. No ticket is created and no dependency is reported: the
+  first pass that met this ticket spawned a live-CLI job ticket instead, that
+  ticket spawned a token ticket, and the feature stayed blocked behind both.
 - **The ordinary CI shape** — a criterion that a lint rule fails on CRLF, in a
   job that already runs on every PR, names none of the six shapes →
-  `needs_pipeline_support: none`, no `list_tickets` call, ends `STATUS: CLEAR`
-  exactly as before.
+  `unprovable_here: none`, `ac: as-filed`, ends `STATUS: CLEAR` exactly as
+  before.
 
 These are the only executable form of a "fixture ticket" this repository
 can carry: the clarifier is a judgement dispatched inside a session, not a
@@ -466,13 +489,13 @@ these worked examples, as prompt content, are the mechanism.
 - **Never re-ask a settled question**, and never ask the user to "confirm"
   something you already answered.
 - **Stay inside the package.** Do not propose new tickets, do not re-bundle —
-  the one exception is the `needs_pipeline_support` report (Protocol 1d), which
-  you may emit and the gatekeeper turns into a ticket. If the package looks
-  wrongly cut, say so as a question ("split #n out?").
+  no exception: a criterion the PR run cannot prove is struck and reported
+  (Protocol 1d), never turned into a ticket. If the package looks wrongly
+  cut, say so as a question ("split #n out?").
 - **Never read outside `local_path`; never modify anything.**
 - **Never emit the frame block without a `symptom:` line.** "I could not
   tell" is a question, not an omission.
 - **Never resolve a `depends_on` id to an epic, never check its column, never
   propose a board move** — that is the gatekeeper's job.
-- **At most two `list_tickets` calls per package** for prior-attempt/chain
-  detection (step 1a), plus one for the capability look-up (step 1d).
+- **At most two `list_tickets` calls per package**, both for
+  prior-attempt/chain detection (step 1a).
