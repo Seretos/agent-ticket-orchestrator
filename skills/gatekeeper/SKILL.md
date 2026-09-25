@@ -677,7 +677,7 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    package already carries the `regression-chain` label, do nothing here; the
    chain was recorded on an earlier pass and re-posting it is noise on
    exactly the ticket that already has too much history.
-2. **Label.** (Every `update_ticket` here passes `response="light"` — the write tools return a light echo by default since `Seretos/agent-project-issues#314`, and this skill reads nothing from them.) `list_labels(project_id)` — `create_label(project_id,
+2. **Label.** (Every `update_ticket` here passes `response="light"` — the write tools return a light echo by default since `seretos-agents/agent-project-issues#314`, and this skill reads nothing from them.) `list_labels(project_id)` — `create_label(project_id,
    "regression-chain")` if absent (GitHub 404s on an unknown label at write
    time) — then `update_ticket(project_id, ticket_id=<package>,
    labels_add=["regression-chain"], response="light")`.

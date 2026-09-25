@@ -56,22 +56,22 @@ and GitHub 404s on an unknown label at ticket-creation time.
 ## Install
 
 ```
-/plugin marketplace add Seretos/agent-marketplace
-/plugin install agent-ticket-orchestrator@agent-marketplace
+/plugin marketplace add seretos-agents/modular-software-factory
+/plugin install agent-ticket-orchestrator@modular-software-factory
 ```
 
 Install it **per project** — enable it in the project's own `.claude/settings.json` (or `settings.local.json`) together with the plugins it drives, then run the skills from that project's main checkout:
 
 ```json
 "enabledPlugins": {
-  "agent-ticket-orchestrator@agent-marketplace": true,
-  "agent-autonomous-developer@agent-marketplace": true,
-  "agent-project-issues@agent-marketplace": true,
-  "agent-worktree@agent-marketplace": true
+  "agent-ticket-orchestrator@modular-software-factory": true,
+  "agent-autonomous-developer@modular-software-factory": true,
+  "agent-project-issues@modular-software-factory": true,
+  "agent-worktree@modular-software-factory": true
 }
 ```
 
-`agent-autonomous-prompt-engineer` is **optional** — add `"agent-autonomous-prompt-engineer@agent-marketplace": true` to the project's committed `.claude/settings.json` (not `settings.local.json`: package sessions run in a worktree, which does not contain untracked files) only in projects that ship model-executed prose (skills, agents, prompts). Without it, the gatekeeper moves a ticket that changes such files to Question and asks whether to install the plugin or run the ticket through the developer anyway.
+`agent-autonomous-prompt-engineer` is **optional** — add `"agent-autonomous-prompt-engineer@modular-software-factory": true` to the project's committed `.claude/settings.json` (not `settings.local.json`: package sessions run in a worktree, which does not contain untracked files) only in projects that ship model-executed prose (skills, agents, prompts). Without it, the gatekeeper moves a ticket that changes such files to Question and asks whether to install the plugin or run the ticket through the developer anyway.
 
 The project must be registered in `~/.seretos/projects.yml` with its `path` (`owner/repo`) matching the repo's `origin` — that is how the skills find their `project_id` — and with `board.columns` listing `Backlog, Planned, Todo, Doing, Done, Question` and `pulls.merge: true`. Fresh sessions may need `/reload-plugins` before the MCP tools are visible.
 
@@ -89,4 +89,4 @@ The project must be registered in `~/.seretos/projects.yml` with its `path` (`ow
 
 ## Release
 
-Manual: Actions → `release` → `version=X.Y.Z`. The workflow stamps the version into both manifests, pushes an orphan `release` branch with the install-ready tree (`skills/`, `agents/`, manifests, `assets/`, `description.md`), tags `agent-ticket-orchestrator--vX.Y.Z`, publishes a GitHub Release and dispatches to `Seretos/agent-marketplace` via the `MARKETPLACE_DISPATCH_TOKEN` secret.
+Manual: Actions → `release` → `version=X.Y.Z`. The workflow stamps the version into both manifests, pushes an orphan `release` branch with the install-ready tree (`skills/`, `agents/`, manifests, `assets/`, `description.md`), tags `agent-ticket-orchestrator--vX.Y.Z`, publishes a GitHub Release and dispatches to `seretos-agents/modular-software-factory` via the `MARKETPLACE_DISPATCH_TOKEN` secret.
