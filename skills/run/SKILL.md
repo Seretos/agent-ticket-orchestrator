@@ -262,7 +262,7 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
   `<n-1>`; the conflict retry in 2c handles the fallout. Do not stop the run,
   do not skip the remaining packages, and do not "fix" this by parallelising.
 
-- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"`: the write tools return a light echo of only a few identifying fields (`Seretos/agent-project-issues#314`), and this skill reads nothing else out of them but `pull_request.merged`.
+- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"`: the write tools return a light echo of only a few identifying fields (`seretos-agents/agent-project-issues#314`), and this skill reads nothing else out of them but `pull_request.merged`.
 - Branch name: `pkg/<id>-<slug>` (slug = title, lower-case, `[^a-z0-9]+` → `-`,
   trimmed, max 40 chars).
 - `environment_list()` first: if a worktree for that branch already exists

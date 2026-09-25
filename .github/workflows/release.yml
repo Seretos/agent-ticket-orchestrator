@@ -298,8 +298,17 @@ jobs:
           # copied to before that happened.
           PAYLOAD=$(NAME="$NAME" DESC="$DESC" REPO="${{ github.repository }}" VERSION="$VERSION" TAG="$TAG" CHANGELOG="$CHANGELOG" bash "${{ steps.rel.outputs.scripts }}/marketplace-payload.sh")
 
+          # Staging first (lands straight to main, no review), then the
+          # curated marketplace (opens a review PR) -- same payload, two
+          # independent dispatches.
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/Seretos/agent-marketplace/dispatches \
+            https://api.github.com/repos/seretos-agents/modular-software-factory-staging/dispatches \
+            -d "$PAYLOAD"
+
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/seretos-agents/modular-software-factory/dispatches \
             -d "$PAYLOAD"

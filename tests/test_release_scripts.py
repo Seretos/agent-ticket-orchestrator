@@ -76,7 +76,7 @@ def run_prev_release_tag_validate(version):
 DEFAULT_PAYLOAD_ENV = {
     "NAME": "agent-ticket-orchestrator",
     "DESC": "Pure skill + agents plugin for the ticket pipeline.",
-    "REPO": "Seretos/agent-ticket-orchestrator",
+    "REPO": "seretos-agents/agent-ticket-orchestrator",
     "VERSION": "0.1.5",
     "TAG": "agent-ticket-orchestrator--v0.1.5",
     "CHANGELOG": "* some change (#1)",
@@ -383,7 +383,7 @@ def test_marketplace_payload_whitespace_only_changelog_is_not_treated_as_empty()
         {
             "NAME": "agent-ticket-orchestrator",
             "DESC": "Pure skill + agents plugin for the ticket pipeline.",
-            "REPO": "Seretos/agent-ticket-orchestrator",
+            "REPO": "seretos-agents/agent-ticket-orchestrator",
             "VERSION": "0.1.5",
             "TAG": "agent-ticket-orchestrator--v0.1.5",
             "CHANGELOG": "* did a thing (#42)",
@@ -394,7 +394,7 @@ def test_marketplace_payload_whitespace_only_changelog_is_not_treated_as_empty()
         {
             "NAME": "agent-worktree",
             "DESC": "A completely different plugin description.",
-            "REPO": "Seretos/agent-worktree",
+            "REPO": "seretos-agents/agent-worktree",
             "VERSION": "2.3.4-beta.1",
             "TAG": "agent-worktree--v2.3.4-beta.1",
             "CHANGELOG": "* something else entirely (#7)",
@@ -425,7 +425,7 @@ def test_marketplace_payload_icon_and_description_url_survive_special_tag_chars(
     env = {
         "NAME": "agent-ticket-orchestrator",
         "DESC": "desc",
-        "REPO": "Seretos/agent-ticket-orchestrator",
+        "REPO": "seretos-agents/agent-ticket-orchestrator",
         "VERSION": "0.1.5-rc.1+build.5",
         "TAG": "agent-ticket-orchestrator--v0.1.5-rc.1+build.5",
         "CHANGELOG": "notes",
