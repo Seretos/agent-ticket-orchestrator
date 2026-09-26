@@ -339,12 +339,25 @@ def test_run_reads_relations_before_dispatch():
 # evidence here since #56 does not change SKILL.md itself.
 
 def _assert_blocker_resolved_by_closed(text: str) -> None:
-    """The 'resolved' definition requires `closed` + `Closes #<n>`; it no
-    longer requires (but does not forbid) `Done`/`custom_fields`, since #45
-    removes that column-based rule."""
+    """(#56 R7b round 5, test-critic round 4) A bare `\\bclosed\\b` +
+    substring check cannot tell the required rule from its negation -- a
+    section reading "resolved once Done; need not be closed" contains both
+    tokens and would pass. Mirrors the structural-extraction technique
+    `_assert_run_required_columns` and the `result (...)` capture in
+    `test_run_report_vocabulary_drops_review_and_not_permitted` already use
+    elsewhere in this file: pull the specific enumerated closed-condition
+    (list item 3 of the "resolved when any of" list) out with a targeted
+    regex and require the declarative `#b is status: closed` form inside it,
+    not just the word anywhere in the section. `Closes #<n>` stays a plain
+    substring check -- it is the secondary PR-linking mention, not the
+    condition under test, and has no plausible negated phrasing to guard
+    against."""
     assert "### When is a blocker resolved" in text
     section = _slice(text, "### When is a blocker resolved", "### 2. Per package, sequentially")
-    assert re.search(r"\bclosed\b", section)
+    m = re.search(r"\n\s*3\.\s+(.*?)\n\s*\n", section, re.S)
+    assert m, "the enumerated closed-condition (list item 3) must be present"
+    item3 = " ".join(m.group(1).split())
+    assert re.search(r"`#b`\s+is\s+`status:\s*closed`", item3), item3
     assert "Closes #<n>" in section
 
 
@@ -353,15 +366,20 @@ def test_run_defines_resolved_as_closed():
 
 
 def test_assert_blocker_resolved_by_closed_rejects_text_missing_closed():
-    """(#56 R7b, test-critic F1) The helper must actually be able to reject,
-    not just accept -- a section with the right heading and a `Closes #<n>`
-    reference but never the word `closed` states a different resolution rule
-    and must fail, proving the helper is not `pass`-shaped."""
+    """(#56 R7b, test-critic F1; tightened round 5, test-critic round 4) The
+    helper must actually be able to reject, not just accept -- a section
+    with the right heading, a proper enumerated list and a `Closes #<n>`
+    reference, but whose item 3 never states the declarative `#b is
+    status: closed` form, states a different resolution rule and must fail,
+    proving the helper is not `pass`-shaped."""
     bad_text = (
         "### When is a blocker resolved\n\n"
-        "A blocker `#b` counts as resolved once `run` itself decides it no\n"
-        "longer matters, regardless of its board state. See Closes #<n> for\n"
-        "the unrelated PR-linking convention.\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` counts as resolved once `run` itself decides it no longer\n"
+        "   matters, regardless of its board state. See Closes #<n> for the\n"
+        "   unrelated PR-linking convention.\n\n"
         "### 2. Per package, sequentially\n"
     )
     with pytest.raises(AssertionError):
@@ -383,15 +401,43 @@ def test_assert_blocker_resolved_by_closed_rejects_missing_heading():
 
 
 def test_assert_blocker_resolved_by_closed_rejects_missing_closes_reference():
-    """(#56 R7b, test-critic round 2 F1) Text with the right heading and the
-    word `closed` but no `Closes #<n>` reference at all states a resolution
-    rule that never requires the PR-linking convention -- a helper that
-    omits the `Closes #<n>` assertion would pass this batch silently, so
-    this case must fail on its own."""
+    """(#56 R7b, test-critic round 2 F1; tightened round 5, test-critic round
+    4) Text with the right heading and a proper item 3 stating the
+    declarative `#b is status: closed` form, but no `Closes #<n>` reference
+    anywhere in the section, states a resolution rule that never requires
+    the PR-linking convention -- a helper that omits the `Closes #<n>`
+    assertion would pass this fixture silently, so this case must fail on
+    its own, and specifically not for the item-3 structural reason the two
+    tests above already cover."""
     bad_text = (
         "### When is a blocker resolved\n\n"
-        "A blocker `#b` counts as resolved once it is `status: closed`,\n"
-        "regardless of how it came to be closed.\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` is `status: closed`, regardless of how it came to be\n"
+        "   closed.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_rejects_negated_closed_condition():
+    """(#56 R7b round 5, test-critic round 4) A section that states the
+    *negation* of the closed condition ("need not be closed") still contains
+    the bare word `closed` and a `Closes #<n>` reference, so it would pass
+    the old `\\bclosed\\b` + substring check silently -- exactly the gap the
+    test-critic flagged. The tightened helper must require the specific
+    declarative `#b` is `status: closed` structural form, not just the bare
+    word floating anywhere in the section."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` need not be `status: closed` to count as resolved -- being\n"
+        "   in the Done column already covers it. See Closes #<n> for the\n"
+        "   unrelated PR-linking convention.\n\n"
         "### 2. Per package, sequentially\n"
     )
     with pytest.raises(AssertionError):
