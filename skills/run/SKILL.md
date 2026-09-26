@@ -10,9 +10,12 @@ You are the unattended executor. Nobody is watching; you may run all night.
 You pull packages from **Todo**, drive each one through its lower plugin
 (`agent-autonomous-developer`, or `agent-autonomous-prompt-engineer` for a
 package labelled `lane:prose` — see step 2b) in its own worktree and its own
-`claude -p` process, and move the board card as the single status signal:
-`Todo → Doing → Done`, or `→ Question`
-when a human decision is genuinely needed.
+`claude -p` process, and record its state with column writes plus one close:
+`Todo → Doing → closed` (the package ticket is closed after its PR merged),
+or `→ Question` when a human decision is genuinely needed. A finished package
+is a **closed ticket**, never a column: this skill neither writes nor reads a
+`Done` column. `Done` survives only as a result word in the final report,
+where it names an outcome.
 
 **Comments are the log, columns are the signal.** You never read a subagent's
 prose to learn what happened — you read the latest `adev:event` comment on
@@ -53,11 +56,11 @@ carry any project content in your context.
 1. **MCPs loaded.** `agent-project-issues` and `agent-worktree` tools must be
    available. If not, **STOP** and tell the user to `/reload-plugins`.
 2. **Board columns.** `list_board_columns(project_id)` must contain the logical
-   columns `Todo`, `Doing`, `Done`, `Question`. Keep the
-   `logical → native` map; every board write uses the *native* value. Missing
+   columns `Todo`, `Doing`, `Question`. Keep the
+   `logical → native` map; every column write uses the *native* value. Missing
    column → STOP for this project with the missing name. Existing boards
    that still carry an extra column keep it: this skill neither reads nor
-   requires it.
+   requires it — that includes a leftover finished-work column.
 3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.
    If `pulls.merge` is `false`, STOP for this project before Step 0 and tell the user to use
    `/agent-autonomous-developer:process-developer` for single tickets instead.
@@ -154,7 +157,7 @@ dependency as described next.
      - otherwise             -> EXTERNAL-OPEN
 4. Every package with an EXTERNAL-OPEN blocker is SKIPPED. Remove it from the
    graph; do not move its card; report
-   `skipped: blocked by #<b> (<its column, or "closed elsewhere: no">)`.
+   `skipped: blocked by #<b> (not closed)`.
 5. Topological order over what remains, INTERNAL edges only — Kahn with a
    board-order tie-break, and no other heuristic:
      ready = packages with no unsatisfied blocker, in board order
@@ -176,37 +179,26 @@ Reading a blocker's ticket by id is not "touching Backlog or Planned". That
 rule forbids *selecting candidates from* and *writing to* those columns; it
 has never forbidden looking at one ticket you were pointed at. `run` still
 enumerates Todo only and still writes nothing outside Todo → Doing →
-Done/Question.
+closed/Question.
 
 ### When is a blocker resolved
 
-A blocker `#b` counts as **resolved** when **any** of:
+A blocker `#b` is **resolved** exactly when it is closed. Decide it like this:
 
-1. `run` itself moved `#b` to **Done** earlier in this very run. Keep a
-   `done_this_run` set; it is authoritative and needs no re-read.
-2. `get_ticket(project_id, #b, include_custom_fields=True,
-   include_comments=False, include_relations=False)` returns
-   `custom_fields["Status"]` equal to the **native name of the logical `Done`**
-   column, from the map Precondition 2 already built.
-3. `#b` is `status: closed` **and** its board column is not one of `Backlog`,
-   `Planned`, `Todo`, `Doing` — a ticket closed without ever having been
-   queued (a duplicate, a wontfix, a hand-closed ticket, or an epic child
-   closed by a `Closes #<n>`). A ticket that is closed while sitting in
-   `Todo` is a contradiction: treat it as **not** resolved and record it,
-   because it is far more likely a mis-close than finished work.
+1. `#b` is in `done_this_run` — the set of package tickets this skill closed
+   itself earlier in this very run → resolved. The set is authoritative and
+   needs no re-read.
+2. Otherwise read it once:
+   `get_ticket(project_id, #b, include_comments=False, include_relations=False)`.
+3. `#b` is `status: closed` → resolved, however it came to be closed: closed
+   by this skill after its merge, an epic child closed by the `Closes #<n>`
+   line in its epic's PR, or a duplicate, wontfix or hand-closed ticket.
 
-Everything else is **not** resolved: `Question`, `Doing`, and no board item
-at all.
-
-**Why "closed" alone is not the test.** An epic package ticket is moved to
-the **Done column** by this skill and is *not* closed — only its children
-close, through `Closes #<n>` in the lower plugin's PR body. A `status`-only
-test would therefore report every finished epic as still blocking and skip
-its dependents forever. Symmetrically, an epic *child* is closed but never
-enters a column, so a column-only test would report finished work as still
-blocking. The column is the primary signal — comments are the log, columns
-are the signal — and `closed` is the fallback for tickets that never travel
-the board.
+Everything open is **not** resolved, whatever its column — `Todo`, `Doing`,
+`Question`, `Backlog`, `Planned` — and so is a ticket that cannot be found.
+Closed alone is enough because this skill closes every package ticket it
+finishes, an epic included, so no finished work stays open; no column is
+consulted.
 
 One `get_ticket` per distinct blocker per run, memoised. Nothing here polls.
 
@@ -238,7 +230,7 @@ package ran; the run's own outcomes are the only new information, and they
 arrive too late for the ordering pass.
 
 - Every blocker resolved → proceed exactly as below.
-- A blocker that was in Todo did **not** reach Done — it ended in
+- A blocker that was in Todo was **not** closed by this run — you left it in
   `Question` or `Doing` → **skip this package**. Leave the card in
   **Todo**, do not move it to Doing, do not cut a worktree, do not start a
   session, and record `skipped: blocker #<b> ended in <column>`. Then
@@ -344,9 +336,26 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 
 | latest event | you do |
 |---|---|
-| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
+| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then **close the package ticket** (below), then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
 | `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
+
+**Close the package ticket — only after a verified merge.** One call on the
+package ticket, the epic when the package is an epic:
+
+```
+update_ticket(project_id, ticket_id=<package>, status=<closed>, response="light")
+```
+
+`<closed>` is the provider's closed status value; which value that is, per
+provider, is in the agent-project-issues skill, "Pull requests: closing the
+ticket on merge" — never hardcode one. The call is idempotent: a single
+ticket may already be closed by its own `Closes #<n>` line, and closing it
+again changes nothing, so make the call anyway. An epic is never closed by
+its PR — only its children are — so without this call a finished epic
+would stay open forever. You do not close the children. Add the package id
+to `done_this_run`. This close is the only place this skill records a
+finished package; there is no finished column to move the card to.
 
 A `pr-opened` or `ci-red` event seen *while the process is still alive* is
 not terminal — but you never see that state, because you only act after
@@ -406,7 +415,7 @@ not fetch a second time, classify from the error text. Then, in this order:
 
 | what you see | what it is | you do |
 |---|---|---|
-| already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: → **Done**, `worktree_remove`. Note `merged externally` in the report. |
+| already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: close the package ticket, `worktree_remove`. Note `merged externally` in the report. |
 | conflict, or the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
 | behind | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
 | gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
@@ -432,7 +441,7 @@ to wait for, let alone decide). Before spending the `failed`/no-terminal-event r
    agent-project-issues skill, "Reading a run's `status` and `conclusion`".
 2. **The head commit is CI-green**, and `mergeable_state` does not read as a conflict per
    the table above → the package is finished in every way that matters even though the process
-   never said so. Go straight to the `ci-green` reaction (merge, verify `merged: true`, → Done)
+   never said so. Go straight to the `ci-green` reaction (merge, verify `merged: true`, close the package ticket)
    **without spending the retry**.
 3. **At least one run has not finished** → the package is only waiting.
    `Bash("sleep 60")` once and re-check — the same one-more-look pattern the merge classification
@@ -468,7 +477,7 @@ and a conflict is a retry* below for why they do not share a counter).
    the same 45-minute rounds.
 3. **React to the new latest event.**
    - `ci-green` → back to the top of the `ci-green` row: `merge_pr(…, response="light")`, verify
-     `merged: true`, → **Done**, `worktree_remove`. Note `merged after
+     `merged: true`, close the package ticket, `worktree_remove`. Note `merged after
      rebase` in the report.
    - `ci-green` and the merge fails **again** → stop. `add_comment` naming
      both merge attempts, both `mergeable_state` values and both `RUNDIR`s →
@@ -505,10 +514,12 @@ continue. A stuck worktree never blocks the next package.
 ### 3. Final report
 
 One table: `package · result (Done / Question / Skipped) · note · PR
-· rounds (from the last event's `rounds`) · attempts`. `note` is empty for a
+· rounds (from the last event's `rounds`) · attempts`. `Done` in the result
+column means the PR merged and the package ticket is closed — a result, not a
+column. `note` is empty for a
 clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `blocked-escalated`,
-`manual cleanup: <path>`, `skipped: blocked by #<b> (<column>)`,
+`manual cleanup: <path>`, `skipped: blocked by #<b> (not closed)`,
 `skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`,
 `skipped: prose lane not installed`.
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
@@ -517,7 +528,7 @@ dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,
 processed in board order`) — all named above.
 
 The run is **SUCCESS only if every package reached Done**. Anything else is
-**PARTIAL** with the list of what is not Done and where it sits. A skipped
+**PARTIAL** with the list of what is not Done and which column it sits in. A skipped
 package makes the run PARTIAL, correctly — it is not Done. But it is a
 **benign** partial that names its own blocker and its own next step, unlike a
 failure; do not blur the two in the report. Never silently drop a package,
@@ -658,7 +669,7 @@ as an ordinary retry, just `attempt+1`.
   `Edit`/`Write` are not part of this skill's job even if available.
 - **Never touch Backlog or Planned.** Never move anything *out of* Question —
   that direction is human-only (→ Todo or → Backlog).
-- **Board writes are the status channel; comments only where this skill says**
+- **Column writes plus the one close are the status channel; comments only where this skill says**
   (failure summary before → Question, the one-line escalation, the
   merge-failed notes, and the merge-outcome
   classification's own comments: both merge attempts on a persisted conflict,
@@ -679,6 +690,6 @@ as an ordinary retry, just `attempt+1`.
   permission, and an unresolved mergeability state remain human-only.
 - **A blocked package is skipped, never reordered past its blocker and never
   escalated.** It stays in Todo; the next run picks it up once the blocker
-  reaches Done. See *1a. Order Todo by dependency*.
+  is closed. See *1a. Order Todo by dependency*.
 - **A dependency cycle never stops the night.** Report it, process the
   cycle's members in board order at the end, continue.

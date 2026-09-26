@@ -51,13 +51,17 @@ projects to the point where finding the asked-about tickets was work).
    sessions do not auto-load plugin MCPs — anthropics/claude-code#61866),
    **STOP** and tell the user to `/reload-plugins`, then re-invoke.
 2. **Board columns.** Call `list_board_columns(project_id)` and keep the
-   `logical → native` map. `Backlog`, `Planned` and `Question` must all be
-   present as *logical* names. If `Planned` or `Question` is missing, **STOP**
-   with a clear message: the project's `board.columns` in
-   `~/.seretos/projects.yml` must list them, and the native column must exist
-   on the board — `ensure_board_column` can create it but needs
-   `permissions.board.manage`. Never hardcode a native name ("Frage offen" vs
-   "Question" is a per-board choice; the logical name is the contract).
+   `logical → native` map and the order the columns come back in — Step 0
+   ranks by that order, and a ticket with no status label counts as
+   Backlog. `Backlog`, `Planned` and `Question` must all be returned as
+   *logical* names, and `Backlog` must be the first column returned. If one
+   is missing, or `Backlog` is present but not first, **STOP** with a clear
+   message naming which: the project's `board.columns` in
+   `~/.seretos/projects.yml` must list all three, `Backlog` first —
+   `ensure_board_column` can create a missing one but needs
+   `permissions.board.manage`; the order is fixed only in that file. Never hardcode a native
+   name ("Frage offen" vs "Question" is a per-project choice; the logical
+   name is the contract).
 3. **Write permission.** From the resolved project entry read `permissions.issues.create` and
    `issues.modify` must be `true` (you create epics, add relations, post
    comments, move cards). Otherwise STOP and say which flag is missing.
@@ -68,6 +72,64 @@ projects to the point where finding the asked-about tickets was work).
    `blocked_by` (which ones: the agent-project-issues skill, "Relations:
    direction matters") is **not** a stop condition — see Step 3.5's
    fallback.
+
+## Step 0 — repair duplicate status labels
+
+A project without a board binding tracks each ticket's column as a
+`status:*` label, and a column write that added the new label without
+removing the old one leaves a ticket in two columns at once. Find those
+tickets and keep only the state furthest along the configured column order
+(the order Precondition 2 kept). This runs first, on every pass — including
+one that finds no candidates — so that Step 1's column reads see one state
+per ticket. One call:
+
+```
+list_tickets(project_id, status="open", limit=100, omit_body=True, omit_nulls=True)
+```
+
+For every ticket carrying **two or more** labels whose prefix before the
+first `:` is `status` (any case), pipe one JSON object on **stdin** to
+`scripts/gatekeeper/state-repair.py` (`python`, or `python3` if `python` is
+not on PATH) — the same stdin-JSON → stdout-verdict convention as
+`relation-readback.py`:
+
+```
+{"columns": [the logical column names, in Precondition 2's order],
+ "labels": [all of the ticket's labels], "state": "open",
+ "reopened_at": null, "latest_event": null, "pr": null}
+```
+
+Fill `reopened_at` only when the ticket read returned a reopen timestamp;
+the reads above return none today, so it stays `null`. Only when it is set,
+also read the ticket's latest `adev:event`
+(`list_comments(project_id, ticket_id, order="desc", limit=3, body_max_chars=600)`,
+the first comment containing `<!-- adev:event`) into
+`latest_event` (`event`, the comment's creation time as `at`, `pr`) and,
+when that event names a PR, `get_pr(project_id, pr_id=<pr>)` into `pr`
+(`number`, `merged`, `merged_at`). Never guess a value; absent is `null`.
+
+Read stdout:
+
+- `verdict: ok` (exit 0) → nothing to do.
+- `verdict: repair` (exit 2) → for the `remove:` lines,
+  `update_ticket(project_id, ticket_id, labels_remove=[every label named on a remove: line], response="light")`
+  and record `repaired: #<id> kept <the keep: label>, removed <labels>`.
+  A `close: yes` line → close the ticket exactly as `run` closes a finished
+  package: `update_ticket(project_id, ticket_id, status=<closed>, response="light")`,
+  with the closed value the agent-project-issues skill names for the
+  provider ("Pull requests: closing the ticket on merge"); record it in the
+  same `repaired` line.
+- exit 1 (`error: …`, e.g. a status label that matches no configured
+  column) → write nothing for that ticket, record
+  `repair skipped: #<id> — <the error line>`, and continue. Never abort the
+  pass for it.
+
+On a project whose board is bound, no ticket carries `status:*` labels, so
+this step finds nothing; there is no separate path for it. Removing a
+duplicate label is **not** a column move: the card stays in the column it was
+furthest along in, so it never counts as moving a card into Todo, and doing
+it on a Question card `run` owns is not touching that card in the sense of
+the Hard rules — its state is the same afterwards, only no longer ambiguous.
 
 ## Step 1 — enumerate the Backlog, and your own answered Question cards
 
@@ -98,7 +160,7 @@ list_tickets(project_id, column="Question", status="open", limit=100, omit_body=
 A candidate whose `depends_on` names an ignored ticket is nothing new: the
 ignored ticket is a blocker outside this pass, the relation is written as
 for any other (Step 3.5), and `run` withholds the dependent until the
-blocker reaches Done.
+blocker is closed.
 
 Then drop every ticket that is **already a child of an epic**: for each
 candidate call `list_hierarchy(project_id, ticket_id)` and exclude it when
@@ -132,8 +194,8 @@ they are and are not mentioned in the report except by count ("<n> Question
 cards still waiting, <m> belong to run").
 
 0 candidates → report "Backlog is empty / fully packaged, no answered
-Question cards" — plus the `ignored` line of Step 5 when any ticket was
-skipped for its label — and stop.
+Question cards" — plus the `ignored` line and any `repaired` /
+`repair skipped` lines of Step 5 — and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
 
@@ -646,10 +708,11 @@ for each raw target #t:
      else list_hierarchy(project_id, #t); parent non-null -> walk up
        (at most 3 hops, take the topmost)
      else target = #t
-     Why: only the package ticket travels the board and reaches Done. A
-     child closes as a side effect of its epic's PR and never has a column,
-     so a relation pointing at a child is a relation `run` can never see
-     satisfied.
+     Why: only the package ticket travels the board and is closed by
+     `run`. A child never has a column and closes only as a side effect of
+     its epic's PR, where the provider closes it at all, and `run` reads
+     `blocked_by` only from the package ticket it is about to dispatch —
+     so the edge belongs on package tickets at both ends.
   2. Drop a self-edge. target == this package -> record "dependency absorbed
      into the package", write nothing. Normal outcome when the bundler
      bundled the pair.
@@ -739,7 +802,7 @@ re-writes it before anyone can release the package to Todo.
 The dependent may be a card `run` owns — in Question, carrying an
 `adev:event` comment — and the relation is written there all the same: a
 dependency is a fact, not a decision, and the relation is the only write
-that makes `run` hold the card until this package reaches Done; a report
+that makes `run` hold the card until this package is closed; a report
 line would rely on a human remembering it when they move both cards to
 Todo. It is also the only write such a card receives: no other comment, no
 label, no frame comment, no column move. On GitLab the one
@@ -979,7 +1042,9 @@ the dependent `#<d>` (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
 `prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
-#<id>` and `prose lane not installed: #<id> still waiting` (Step 2).
+#<id>` and `prose lane not installed: #<id> still waiting` (Step 2);
+`repaired: #<id> kept <label>, removed <labels>` (plus `, closed` when the
+verdict carried `close: yes`) and `repair skipped: #<id> — <error>` (Step 0).
 
 Next to the "<n> Question cards still waiting, <m> belong to run" count,
 always when it is not zero: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>`
@@ -1012,7 +1077,8 @@ are all in the Question column — then run
   for a package of this pass, it receives that `blocked_by` relation (on
   GitLab, `relates_to` plus its one `## Dependency (gatekeeper)` comment) and
   nothing else — no other comment, no label, no column move. Otherwise it
-  belongs to `run` and the human — see Step 1.
+  belongs to `run` and the human — see Step 1. Step 0's removal of a
+  duplicate `status:*` label changes no card's column and is not a touch.
 - **Never move anything to Todo.** Planned is your terminal column. Todo is
   written by humans only.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
@@ -1022,10 +1088,12 @@ are all in the Question column — then run
   relations, labels (including `regression-chain` and
   `lane:prose`), clarification comments,
   dependency comments, frame comments, regression-chain comments,
-  lane-split comments, release-confirmation comments, and the Backlog → Planned, Backlog → Question
+  lane-split comments, release-confirmation comments, the removal of
+  duplicate `status:*` labels (Step 0), and the Backlog → Planned, Backlog → Question
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
-  comment; the human edits the ticket body.
+  comment; the human edits the ticket body. The one close you make is Step
+  0's `close: yes`, on a reopened ticket whose work has since merged.
 - **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the prose half of a lane split and an epic (both Step 2).
 - **You never apply a size-driven cut.** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); the only `recut` you apply is the lane split's.
 - **Bundle before clarify**, always.
