@@ -110,6 +110,7 @@ A live check that both backends go through the pipeline the same way. It needs t
 - `scripts/gatekeeper/state-repair.py` — stdin-JSON → stdout-verdict repair for a ticket carrying two or more `status:*` labels: the state furthest along the configured column order is kept. `gatekeeper` Step 0 pipes such tickets through it.
 - `scripts/gatekeeper/prose-lane-available.py` — whether the optional `agent-autonomous-prompt-engineer` is enabled for a project, read from the settings files a package session will see.
 - `scripts/start-package-session.sh` — starts one package session (`--lane prose` selects the prompt engineer's entry; the default is the developer's), or with `--gatekeeper-split` the one-ticket `gatekeeper` split session, and owns the launch lock, stream files and exit marker.
+- `scripts/run/ato-event.py` — renders and parses the `<!-- ato:event v1 -->` machine-readable comment block (`run`'s counterpart to the lower plugin's `adev:event v1`), so an escalation or a merge is detected by a fixed block, not by matching the skill's free-text wording.
 - `templates/ISSUE_TEMPLATE/*.yml` — GitHub issue forms carrying the same heading vocabulary the `clarifier` and `ticket` skill use, for tickets filed by hand through the web UI.
 - `AGENTS.md` — the plugin's copy of the contract with the two lower plugins (entry points, event table, reactions) and the design decisions behind it.
 
