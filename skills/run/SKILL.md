@@ -274,14 +274,39 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
   `<n-1>`; the conflict retry in 2c handles the fallout. Do not stop the run,
   do not skip the remaining packages, and do not "fix" this by parallelising.
 
-- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"` — a light echo (`seretos-agents/agent-project-issues#314`) — and reads nothing out of them but `pull_request.merged`.
 - Branch name: `pkg/<id>-<slug>` (slug = title, lower-case, `[^a-z0-9]+` → `-`,
   trimmed, max 40 chars).
-- Reuse the worktree a crashed attempt left for that branch, else create it
-  with `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>", base=<default branch>)`
-  — how to find and identify it: the agent-worktree skill, "Identity and
-  re-entry guarantees". Take `path` from the record, and keep its id for
-  removal.
+- **Find the branch before claiming the package**, in this order:
+  1. A worktree a crashed attempt left for that branch → you will reuse it;
+     skip the check below. How to find and identify it: the agent-worktree
+     skill, "Identity and re-entry guarantees".
+  2. No worktree left → run, and read its one stdout line and its exit code:
+
+     ```
+     python "${CLAUDE_PLUGIN_ROOT}/scripts/package-branch.py" "<local_path>" "pkg/<id>-<slug>"
+     ```
+
+     - **exit 0** (`branch: existing`) → the branch already exists, locally or
+       on `origin`; the script has made it a local branch at its tip. Create
+       the worktree **without** `base`.
+     - **exit 3** (`branch: new`) → the branch exists nowhere. Create the
+       worktree with `base=<default branch>`.
+     - **exit 1** (`error: …`) → **skip this package**: leave the card in
+       **Todo**, cut no worktree, start no session, record
+       `skipped: branch check failed: <error line>`, continue. Never read an
+       error as `new`: a fresh cut from the default branch would discard any
+       commits the branch already carries.
+- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"` — a light echo (`seretos-agents/agent-project-issues#314`) — and reads nothing out of them but `pull_request.merged`.
+- Reuse the left-over worktree, or create it as the check decided:
+  - exit 0 → `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>")`,
+    no `base` — the branch carries the package's commits from an earlier run
+    or another machine, and re-cutting it from the default branch discards
+    them.
+  - exit 3 → `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>", base=<default branch>)`.
+    Keep `base` here: without it a new branch is cut from whatever
+    `<local_path>` has checked out.
+
+  Take `path` from the record, and keep its id for removal.
 
 **b. Start the package session — yourself, from this turn.** No subagent
 wraps the process: a task-notification for a backgrounded Bash command is
@@ -561,7 +586,8 @@ clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `blocked-escalated`,
 `manual cleanup: <path>`, `skipped: blocked by #<b> (not closed)`,
 `skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`,
-`skipped: prose lane not installed`, `split: code half #<n>`, `split-failed`.
+`skipped: prose lane not installed`, `skipped: branch check failed: <error line>`,
+`split: code half #<n>`, `split-failed`.
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
 one line per sequencing violation observed during the run, and one line per
 dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,
