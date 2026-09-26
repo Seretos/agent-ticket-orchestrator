@@ -66,6 +66,28 @@ carry any project content in your context.
    a git checkout; the default branch is `git -C <local_path> symbolic-ref
    --short refs/remotes/origin/HEAD` (fallback: `main`). `worktree_create`
    fetches `origin` itself.
+5. **Settings committed.** Run exactly this and read both its output and its exit code:
+
+   ```
+   git -C <local_path> status --porcelain --untracked-files=all --ignored -- .claude/settings.json
+   ```
+
+   - **Exit 0 and empty output** → the file matches `HEAD`; continue.
+   - **Exit 0 and any output line** (` M` modified, `??` never committed, `!!` present but
+     gitignored, ` D` deleted, or any other status) → STOP for this project before Step 0.
+     Tell the user that `.claude/settings.json` in `<local_path>` is not committed, quote
+     git's output lines verbatim, and say why that matters: every worktree this skill cuts
+     is checked out from a committed ref, so every package session would load the
+     committed plugin set, not the one this checkout shows. Commit or revert the file,
+     then re-run.
+   - **Non-zero exit** → STOP for this project before Step 0 the same way, quoting git's
+     error. A check that could not run is never read as clean.
+
+   Nothing was touched: no column moved, no worktree created, no session started.
+   Only this one file is checked: `.claude/settings.local.json` is untracked by design and
+   never reaches a worktree anyway. Once this precondition holds, the file
+   `prose-lane-available.py` reads in step 2b is the same committed file the package
+   session gets, so its verdict is the session's truth.
 
 ## Flow per project
 
