@@ -40,10 +40,10 @@ downstream can recover from it.
    quantities, and a user never observes one.
 2. **Measurement.** Does the acceptance criterion measure *that symptom*, or
    an internal quantity? Read `ticket.acceptance_criteria` **and** the body's
-   own acceptance section — on GitHub and GitLab `acceptance_criteria` is
-   always empty (the providers have no such field), so on those two the AC is
-   prose in the body under a heading like `## Acceptance` / `## Akzeptanz`,
-   and missing that is missing the whole question. If the AC measures an
+   own acceptance section — the field is often empty (see `get_ticket`'s
+   description), and the AC is then prose in the body under a heading from
+   the vocabulary below, like `## Acceptance` / `## Akzeptanz`; missing that
+   is missing the whole question. If the AC measures an
    internal quantity: it must be **extended** with the symptom, and the
    internal quantity **demoted to a helper measurement** — "thread count
    stays bounded" is fine as a diagnostic, never as the finish line.
