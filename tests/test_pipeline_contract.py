@@ -324,9 +324,19 @@ def test_run_reads_relations_before_dispatch():
 # --- #56 R7: forward-compatible with #45's future Done-column removal ------
 # #56 merges before #45 rewrites skills/run/SKILL.md to drop Done as a board
 # column; the suite must stay green on today's text (Done still present) and
-# on #45's eventual text (Done gone). These two helpers carry the shared
-# assertion so both the real-file test and the fixture-based driving test
-# below exercise the same forward-compatible rule.
+# on #45's eventual text (Done gone).
+#
+# R7b (this helper) has no fixture-based "survives #45" test: a synthetic
+# fixture written by this ticket can only prove that the fixture's own tokens
+# satisfy the check, never that the check verifies actual meaning in prose
+# #45 (a different, not-yet-run package) has not written yet -- test-critic
+# flagged that self-referential tautology three rounds running
+# (.adev/56-1/test-critic-3/critique-merged.json). R7's own acceptance
+# criterion only asks that this test expect `closed` instead of a `Done`
+# column, which `test_run_defines_resolved_as_closed` below already does
+# against the real file; the negative-case tests below it exercise the
+# helper's ability to actually reject, which is what stands in for RED/GREEN
+# evidence here since #56 does not change SKILL.md itself.
 
 def _assert_blocker_resolved_by_closed(text: str) -> None:
     """The 'resolved' definition requires `closed` + `Closes #<n>`; it no
@@ -336,21 +346,6 @@ def _assert_blocker_resolved_by_closed(text: str) -> None:
     section = _slice(text, "### When is a blocker resolved", "### 2. Per package, sequentially")
     assert re.search(r"\bclosed\b", section)
     assert "Closes #<n>" in section
-
-
-_POST_45_BLOCKER_FIXTURE = (
-    "### When is a blocker resolved\n\n"
-    "A blocker `#b` counts as **resolved** when **any** of:\n\n"
-    "1. `run` itself resolved `#b` earlier in this very run. Keep a\n"
-    "   `done_this_run` set; it is authoritative and needs no re-read.\n"
-    "2. `#b` is `status: closed` **and** its board column is not one of\n"
-    "   `Backlog`, `Planned`, `Todo`, `Doing` -- a ticket closed without ever\n"
-    "   having been queued (a duplicate, a wontfix, a hand-closed ticket, or\n"
-    "   an epic child closed by a `Closes #<n>`). A ticket that is closed\n"
-    "   while sitting in `Todo` is a contradiction: treat it as **not**\n"
-    "   resolved and record it.\n\n"
-    "### 2. Per package, sequentially\n"
-)
 
 
 def test_run_defines_resolved_as_closed():
@@ -2855,19 +2850,17 @@ def test_assert_run_required_columns_rejects_unexpected_extra_column():
         _assert_run_required_columns(_BAD_COLUMNS_FIXTURE_EXTRA_COLUMN)
 
 
-@pytest.mark.parametrize("kind", ["columns", "blocker"])
+@pytest.mark.parametrize("kind", ["columns"])
 def test_run_contract_survives_done_as_closed(kind):
-    """(#56 R7) Each rule must hold both on today's SKILL.md (Done still a
-    board column / still checked via custom_fields) and on a fixture shaped
-    like #45's future rewrite (Done gone entirely) -- #56 merges first and
-    cannot predict #45's exact prose, only that Done becomes optional/absent
-    while `closed` + `Closes #<n>` remain the blocker-resolution rule."""
-    if kind == "columns":
-        _assert_run_required_columns(_read(RUN))
-        _assert_run_required_columns(_POST_45_COLUMNS_FIXTURE)
-    else:
-        _assert_blocker_resolved_by_closed(_read(RUN))
-        _assert_blocker_resolved_by_closed(_POST_45_BLOCKER_FIXTURE)
+    """(#56 R7a) The columns rule must hold both on today's SKILL.md (Done
+    still a board column) and on a fixture shaped like #45's future rewrite
+    (Done gone entirely) -- #56 merges first and cannot predict #45's exact
+    prose, only that Done becomes optional/absent. There is no "blocker" case
+    here any more: a synthetic fixture for the blocker-resolution prose can
+    only prove itself, not that the check verifies #45's actual (not yet
+    written) wording -- see the comment above `_assert_blocker_resolved_by_closed`."""
+    _assert_run_required_columns(_read(RUN))
+    _assert_run_required_columns(_POST_45_COLUMNS_FIXTURE)
 
 
 def test_review_column_is_gone_from_the_contract():
