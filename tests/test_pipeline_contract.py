@@ -444,6 +444,32 @@ def test_assert_blocker_resolved_by_closed_rejects_negated_closed_condition():
         _assert_blocker_resolved_by_closed(bad_text)
 
 
+def test_assert_blocker_resolved_by_closed_accepts_text_without_done_or_custom_fields():
+    """(#56 R7b, test-critic round 5 F1) R7b's whole point is that the helper
+    no longer *requires* (though it does not forbid) `Done`/`custom_fields` --
+    every fixture above proves only the reject side of that. This hand-written
+    text has the right heading, the declarative `#b is status: closed` item 3
+    and a `Closes #<n>` reference, but never mentions `Done` or `custom_fields`
+    anywhere; an unchanged OLD helper that still additionally required both
+    words present (in addition to `closed`/`Closes #<n>`) would reject this
+    text, so a clean pass here is genuine evidence the accept path holds
+    without them -- not a restatement of `test_run_defines_resolved_as_closed`,
+    which exercises today's real SKILL.md, where both words still happen to
+    appear elsewhere in the file."""
+    good_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` is `status: closed`. See Closes #<n> for the PR-linking\n"
+        "   convention.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    assert "Done" not in good_text
+    assert "custom_fields" not in good_text
+    _assert_blocker_resolved_by_closed(good_text)  # must not raise
+
+
 def test_run_orders_topologically_with_board_order_tiebreak():
     text = _read(RUN)
     section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
