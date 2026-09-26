@@ -47,7 +47,8 @@ REASONS = [
     "merge-conflict",
     "rebase-decision",
 ]
-KNOWN_KEYS = {"event", "package", "reason", "pr", "merge_sha"}
+KNOWN_KEYS = {"event", "package", "reason", "pr", "merge_sha",
+              "cost_usd", "duration_ms", "turns"}
 
 
 def read_block(text):
@@ -229,6 +230,9 @@ def test_block_independent_of_wording(event, wrap_id):
         "reason": expected.get("reason", ""),
         "pr": expected.get("pr", ""),
         "merge_sha": expected.get("merge_sha", ""),
+        "cost_usd": expected.get("cost_usd", ""),
+        "duration_ms": expected.get("duration_ms", ""),
+        "turns": expected.get("turns", ""),
     }
 
 
@@ -256,7 +260,8 @@ def test_parse_empty_value_is_empty_string():
     assert result.returncode == 0, result.stdout + result.stderr
     parsed = json.loads(result.stdout)
     assert parsed == {"event": "merged", "package": "63", "reason": "",
-                       "pr": "", "merge_sha": ""}
+                       "pr": "", "merge_sha": "", "cost_usd": "",
+                       "duration_ms": "", "turns": ""}
 
 
 def test_parse_first_of_two_blocks_wins():

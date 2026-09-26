@@ -34,8 +34,20 @@
 # a package session's run dir. See .adev/53-1/plan.md; the flow that calls this mode
 # (triage marker, gatekeeper/run wiring) is #57, out of scope here.
 #
-# Prints `RUNDIR=<dir>` first, then `EXIT=<code>` last. Exit code = the session's.
+# Prints `RUNDIR=<dir>` first, then `COST_USD=<v>`, `DURATION_MS=<v>`, `TURNS=<v>`,
+# then `EXIT=<code>` last. Exit code = the session's.
 # Writes <rundir>/stream.jsonl, <rundir>/stderr.txt, <rundir>/exit_code.
+#
+# COST_USD/DURATION_MS/TURNS (#65): read from the session's own final `"type":"result"`
+# record in stream.jsonl (its `total_cost_usd`/`duration_ms`/`num_turns` fields) with
+# grep+sed -- no interpreter dependency, since `python`/`python3` naming differs between
+# Git Bash on Windows and the Ubuntu CI runner, and the script already parses the stream
+# this way for the launch-lock's `"type":"system"` check. Only the *last* line whose
+# `"type"` is `"result"` is examined (`grep | tail -n 1`), so an escaped decoy of the
+# same key name inside an assistant message's text (`\"total_cost_usd\":...`) never
+# matches -- the key-quote is preceded by a backslash there, not `{`/`,`. No result
+# record, or a key missing from it, reports that value as an empty string, never a
+# missing line.
 #
 # Model: pinned via --model, default `sonnet`, override with the environment
 # variable ADEV_SESSION_MODEL. Pinning is not a preference, it is a correctness
@@ -161,6 +173,27 @@ done
 rm -rf "$LOCK"
 
 wait "$PID"; EXIT=$?
+
+# --- session cost/duration/turns (#65) ----------------------------------------------
+# Last line whose "type" is "result" (there is at most one per session in practice,
+# but "last wins" if a stream ever carried more than one). Tolerates the optional
+# space after ":" that a plain JSON encoder emits (`"key": value`), not just the
+# compact `"key":value` form.
+RESULT_LINE="$(grep -E '"type"[[:space:]]*:[[:space:]]*"result"' "$RUNDIR/stream.jsonl" 2>/dev/null | tail -n 1)"
+
+extract_result_field() {
+  # $1 = JSON key name; echoes its numeric value from $RESULT_LINE, or "" if the
+  # key is absent (no result record, or the key is missing from it).
+  printf '%s' "$RESULT_LINE" | sed -n -E "s/.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*([0-9][0-9.eE+-]*)[[:space:]]*[,}].*/\1/p"
+}
+
+COST_USD="$(extract_result_field total_cost_usd)"
+DURATION_MS="$(extract_result_field duration_ms)"
+TURNS="$(extract_result_field num_turns)"
+echo "COST_USD=$COST_USD"
+echo "DURATION_MS=$DURATION_MS"
+echo "TURNS=$TURNS"
+
 echo "$EXIT" > "$RUNDIR/exit_code"
 echo "EXIT=$EXIT"
 exit "$EXIT"
