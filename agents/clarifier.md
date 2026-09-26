@@ -144,6 +144,21 @@ label one heading level deeper than a hand-written `##`.
    validates and writes the relation; you only report what you saw and what
    shows it.
 
+   **1b (reverse). Record what waits for this package — its own key.**
+   Another ticket can need what *this* package introduces: its own body or comments say it waits for this
+   package, or name this package as its enabler. That ticket must not run
+   before this package merges. Report it as `needed_by:` (Output format),
+   never in `depends_on:` — `depends_on` lists what this package waits for,
+   `needed_by` lists what waits for this package — and never folded into
+   `ac:` or `premise:` prose, where the gatekeeper cannot write a relation
+   from it. Same rules as `depends_on`: a raw ticket id as you found it, no
+   lifting to an epic, no column or status check. Evidence is the other
+   ticket's own statement, read with `get_ticket`/`list_comments`; a bare
+   `mentions` relation is not enough. The case this exists for:
+   `agent-project-issues` #375 introduced what the Question card #365 was
+   waiting for, the clarifier said so in prose ("the enabler for #365"), and
+   no key carried it.
+
    **1c. Sweep for unverified premises.** A plan can rest on a capability,
    version, schema or file nobody has actually checked exists — sometimes
    inherited from an earlier clarification on a *different* ticket, not this
@@ -269,6 +284,7 @@ prior_attempts: none | #<id>[,#<id>…]
 chain: none | regression-chain:#<id>,#<id>[,…]
 reframe: none | <one line: how the package is implemented instead, incl. the non-goal>
 depends_on: none | #<id>[,#<id>…]
+needed_by: none | #<id>[,#<id>…]
 premise: none | <one capability, version, schema or file this plan assumes but nothing here has verified>
 unprovable_here: none | <the criterion clause this package's own PR run cannot produce evidence for>
 -->
@@ -282,6 +298,9 @@ unprovable_here: none | <the criterion clause this package's own PR run cannot p
 
 ### Dependencies                (only when depends_on is not none)
 - #<id> — <what this package needs that #<id> introduces> — <file:symbol or ticket line that shows it>
+
+### Needed by                   (only when needed_by is not none)
+- #<id> — <what #<id> needs that this package introduces> — <#<id>'s own line (body or comment) that states it>
 
 ### Resolved by reading
 - <decision the run would otherwise have faced> — <answer> — <what settled it: ticket text / comment / file:symbol>
@@ -326,7 +345,7 @@ Then the **last line** is exactly one of:
 
 The `<!-- clarifier:frame v1 -->` block is a **prefix, never a replacement**
 for the status line — it is emitted on **both** statuses, because the
-gatekeeper needs `depends_on` from a `NEEDS_INPUT` package too. It is an HTML
+gatekeeper needs `depends_on` and `needed_by` from a `NEEDS_INPUT` package too. It is an HTML
 comment so it survives being pasted into a ticket comment; dumb `key: value`
 lines, empty value = unknown, unknown keys ignored — the same reader the
 `run` skill already applies to `adev:event`, deliberately, so this repository
@@ -495,7 +514,7 @@ these worked examples, as prompt content, are the mechanism.
 - **Never read outside `local_path`; never modify anything.**
 - **Never emit the frame block without a `symptom:` line.** "I could not
   tell" is a question, not an omission.
-- **Never resolve a `depends_on` id to an epic, never check its column, never
-  propose a board move** — that is the gatekeeper's job.
+- **Never resolve a `depends_on` or `needed_by` id to an epic, never check its
+  column, never propose a board move** — that is the gatekeeper's job.
 - **At most two `list_tickets` calls per package**, both for
   prior-attempt/chain detection (step 1a).

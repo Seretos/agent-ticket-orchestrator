@@ -115,7 +115,9 @@ bundler may fold further tickets into them or leave them as-is.
    there;
 2. it carries **no** `<!-- adev:event` comment — it was never dispatched, so
    it is not a card `run` escalated (those are `run`'s and a human's, never
-   yours, even if they also carry an older clarification comment);
+   yours, even if they also carry an older clarification comment — except
+   for the one relation Step 3.5 writes onto such a card when a package of
+   this pass is what it waits for);
 3. at least one comment is **newer** than your latest clarification comment —
    somebody answered. A card with your question and nothing after it is still
    waiting; skip it silently, nothing changed. One exception, for the second
@@ -167,6 +169,7 @@ It returns a JSON block:
                   "paths": [{ "path": "...", "role": "deliverable" | "accompanying" }, ...] }, ...],
     "rationale": "...",
     "depends_on": [ { "ticket": <id>, "why": "...", "evidence": "..." } ],
+    "needed_by":  [ { "ticket": <id>, "why": "...", "evidence": "..." } ],
     "changed_from_previous": { "ticket": <id>, "was": "...", "now": "...",
                                 "changed_by": "..." } }
   ],
@@ -478,7 +481,8 @@ pass, every candidate ticket id → the id of the package ticket it now belongs
 to (its epic, or itself). Every dependency written in Step 3.5 is resolved
 through this map first, so a dependency naming a ticket that became an epic
 child in this same pass lands on the epic, not on the child. Also fold the
-bundler's own `depends_on` entries into a per-package `deps` list here, to be
+bundler's own `depends_on` entries into a per-package `deps` list, and its
+`needed_by` entries into a per-package `needed_by` list, here — both are
 written in Step 3.5 together with the clarifier's.
 
 ## Step 3 — clarify each package
@@ -495,7 +499,9 @@ that writes stays one package at a time.
    `depends_on` targets for it, lifted through the Step 2 package map, is
    another package of the clarify set. A target that lifts to the package
    itself, or to a ticket outside the clarify set, is not an edge and never
-   holds a dispatch back (Step 3.5 still writes it).
+   holds a dispatch back (Step 3.5 still writes it). A `needed_by` entry
+   never creates an edge either: it names a ticket outside the candidate
+   list.
 3. **Waves.** Wave 1 is every package with no same-pass edge. Each later wave
    is the packages whose same-pass blockers were all in earlier waves. The
    bundler's order decides nothing else: a package listed first still waits
@@ -592,7 +598,7 @@ fixed.
 `<!-- clarifier:frame v1 … -->` block on **both** statuses. Parse it as dumb
 `key: value` lines — the same reader `run` applies to `adev:event`: empty
 value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
-`ac`, `premise`, `unprovable_here` and `depends_on` for every package, `chain`
+`ac`, `premise`, `unprovable_here`, `depends_on` and `needed_by` for every package, `chain`
 and `reframe` for Step 3.6, and `ac`, `premise` and `unprovable_here` again for
 Step 4's frame comment. `premise` may appear more than once — collect every
 occurrence, in the order they appear. `unprovable_here` is read the same way:
@@ -692,6 +698,58 @@ for each raw target #t:
 Pipe `{"expected": [...], "relations": [...], "reasons": {...}}` as JSON on **stdin** to `scripts/gatekeeper/relation-readback.py` (`python`, or `python3` if `python` is not on PATH), and read its `verdict: ok|gap` line from stdout — `exit 0` on `ok`, `exit 2` on `gap` (naming the missing target(s)).
 A `gap` verdict: re-write the missing relation once (step 4 above) and re-run the read-back; still `gap` → record it as an **unexplained gap** in Step 5's report.
 A `gap` verdict does not move the package to Planned (Step 4); it stays in its current column until the next pass's write succeeds, and Step 5 records the unexplained gap.
+
+**Reverse edges — a ticket that waits for this package.** Then, for the same
+package, a second loop. `needed_by` names tickets outside the candidate list
+whose own text says they need what this package introduces; the relation is
+written **on that dependent**, pointing at this package, because `run` reads
+blockers only from the card it is about to dispatch.
+
+```
+needed_by = bundler's needed_by for this package  ∪  clarifier frame's needed_by
+for each raw dependent #d:
+  1. Lift #d exactly as step 1 above (package map, then list_hierarchy,
+     at most 3 hops, topmost) -> dependent
+  2. dependent == this package -> record "reverse dependency absorbed",
+     write nothing, skip steps 3-5, next #d.
+     get_ticket(project_id, dependent):
+     - not found     -> record "#d not found", write nothing,
+                        skip steps 3-5, next #d
+     - status closed -> record "#d closed", write nothing,
+                        skip steps 3-5, next #d
+  3. Write, from the DEPENDENT side:
+     - "blocked_by" in provider_support[<provider>] (github, azuredevops):
+         add_relation(project_id, ticket_id=<dependent>,
+                       kind="blocked_by", target="#<this package>")
+     - otherwise (GitLab):
+         add_relation(project_id, ticket_id=<dependent>,
+                       kind="relates_to", target="#<this package>")
+       plus the `## Dependency (gatekeeper)` comment of step 4 above, posted
+       on the DEPENDENT, with `Blocked by: #<this package>` and
+       `blocked_by: #<this package>` in its `gatekeeper:deps v1` block.
+  4. Idempotency, as step 5 above: skip a relation the dependent already
+     carries, and on GitLab a comment it already carries.
+  5. Read back per dependent: pipe {"expected": ["#<this package>"],
+     "relations": <a fresh get_ticket(project_id, <dependent>,
+     include_relations=True), {kind, target} per entry>, "reasons": {}}
+     to relation-readback.py, exactly as above.
+```
+
+A `gap` gets one re-write and one re-read. Still `gap` → it is an
+**unexplained gap**, and it withholds **this package** — not the
+dependent — from Planned, so the next pass finds the entry again and
+re-writes it before anyone can release the package to Todo.
+
+The dependent may be a card `run` owns — in Question, carrying an
+`adev:event` comment — and the relation is written there all the same: a
+dependency is a fact, not a decision, and the relation is the only write
+that makes `run` hold the card until this package reaches Done; a report
+line would rely on a human remembering it when they move both cards to
+Todo. It is also the only write such a card receives: no other comment, no
+label, no frame comment, no column move. On GitLab the one
+`## Dependency (gatekeeper)` comment is part of that relation's record and
+is the single exception; on GitHub and Azure DevOps the dependent gets the
+relation and nothing else.
 
 **Being blocked never withholds a package from Planned.** A package whose
 questions are settled moves to Planned in Step 4 exactly as it would without
@@ -877,7 +935,8 @@ update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native 
 This is the same call whether the package came from Backlog or from your own
 answered Question card (Step 1) — Question → Planned is the one move out of
 Question a skill makes, and only for a card the gatekeeper itself put there
-and a human has since replied on. `run`'s Question cards are never touched.
+and a human has since replied on. `run`'s Question cards are never moved or
+commented on; Step 3.5's reverse-edge relation is the one write they receive.
 
 Then leave the release confirmation, always, once the move above has succeeded — the comment asserts a move that happened, so a failed move leaves nothing behind. Write `Question` in place of `Backlog` on the `Moved:` line for a card reclaimed from Question; the body has no other variable part:
 
@@ -918,6 +977,11 @@ closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
 2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
+`reverse dependency: #<d> blocked_by #<pkg> (written | already present |
+#<d> closed | not found | absorbed)` for every `needed_by` entry, and
+`unexplained relation gap (reverse): #<d> — #<pkg>` for a reverse edge whose
+read-back failed twice; the withheld package is the second id, `#<pkg>`, not
+the dependent `#<d>` (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
 `prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
@@ -949,8 +1013,12 @@ are all in the Question column — then run
   the ticket, not asked in chat. Nothing here waits on a live reply.
 - **Never block on one package.** A package that needs a human answer goes
   to Question and you move straight to the next candidate — see Step 3.
-- **Never touch a Question card you did not put there.** A card with an
-  `adev:event` comment belongs to `run` and the human — see Step 1.
+- **Never touch a Question card you did not put there.** The one exception
+  is Step 3.5's reverse edge: when a card with an `adev:event` comment waits
+  for a package of this pass, it receives that `blocked_by` relation (on
+  GitLab, `relates_to` plus its one `## Dependency (gatekeeper)` comment) and
+  nothing else — no other comment, no label, no column move. Otherwise it
+  belongs to `run` and the human — see Step 1.
 - **Never move anything to Todo.** Planned is your terminal column. Todo is
   written by humans only.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
@@ -980,7 +1048,7 @@ are all in the Question column — then run
   remove it.
 - **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
   package out of Planned (Step 3.5).
-- **An unexplained relation gap withholds Planned.** Unlike `blocked_by`, a relation write that `scripts/gatekeeper/relation-readback.py` cannot verify keeps the package out of Planned until the write succeeds (Step 3.5).
+- **An unexplained relation gap withholds Planned.** Unlike `blocked_by`, a relation write that `scripts/gatekeeper/relation-readback.py` cannot verify keeps the package out of Planned until the write succeeds, including a reverse edge written on another ticket (Step 3.5).
 - **Never write a dependency relation from the child side.** It is written on
   the package ticket, on both ends, lifted through the Step 2 package map and
   `list_hierarchy` (Step 3.5).
