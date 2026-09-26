@@ -807,7 +807,48 @@ package is processed like any other. The clarifier has already written what
 *can* be built (the artifact that makes the check possible for whoever
 performs it later) into `ac:`.
 
-If the block is missing or unparseable, record `frame block missing` in
+**Render the machine blocks, once per comment, from a script.** Every
+`## Regression chain (gatekeeper)` comment (Step 3.6) and every
+`## Frame (gatekeeper)` comment (Step 3.7, Step 4) ends in a machine block
+that tooling reads instead of the prose above it. Pipe one JSON object on
+**stdin** to the script — the same stdin-JSON → stdout convention as
+`relation-readback.py`:
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/render-machine-blocks.py"
+```
+
+(`python3` if `python` is not on PATH), with this object:
+
+```
+{"project": "<owner/repo — the resolved project entry's path>",
+ "ac": "<the frame's ac value, verbatim>",
+ "premise": [every collected premise value, verbatim; [] when absent],
+ "unprovable_here": [every collected unprovable_here value, verbatim; [] when absent],
+ "chain": "<the frame's chain value, verbatim>"}
+```
+
+Pass `chain` **only** for the Step 3.6 comment, and leave the key out for a
+frame comment: the script then prints the `gatekeeper:frame v1` block alone,
+so the `gatekeeper:chain v1` block appears once, on the chain comment. The
+values are the package's own frame values — the same ones that comment's
+prose lines are rendered from.
+
+- **Exit 0.** Append stdout verbatim, after one blank line, as the last lines
+  of the comment body — below `Object by replying on this ticket.`, or below
+  Step 3.6's closing sentence. The block replaces no line of the prose; the
+  prose stays the text a human reads.
+- **Non-zero exit.** Post the comment anyway, with the script's `error: …`
+  line (stderr) where the block would go; record
+  `machine block failed (#<pkg>): <error>` for Step 5; carry on with the
+  label, the relation, the column move — everything exactly as planned. A
+  statistics block never holds up a frame comment or a move.
+
+Never type, count or edit a block yourself: the script is the only source of
+its values. A package whose `clarifier:frame` block is missing (next
+paragraph) gets no machine block — there is no `ac` to pass.
+
+If the `clarifier:frame` block is missing or unparseable, record `frame block missing` in
 Step 5's report and continue on the `STATUS:` line alone — never abort a
 pass for a malformed block.
 
@@ -973,10 +1014,13 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    Not proven by this package: <clause> — … — one line per `unprovable_here` value, rendered exactly as Step 3 defines; omit when `none`
 
    Object by replying on this ticket; otherwise the package is built this way.
+
+   <stdout of render-machine-blocks.py, with chain — frame and chain block, Step 3>
    ```
 
    Content comes from the clarifier's `### Frame` lines, verbatim — you have
-   no code access and must not re-derive it.
+   no code access and must not re-derive it. The last line is the script's
+   output, rendered as Step 3 defines with `chain` passed.
 4. The clarifier's root-cause mandate is already discharged: it detected the
    chain and its own protocol obliged it to **reframe and stay CLEAR** —
    the reframe is applied and reported through this comment, never asked as
@@ -1002,7 +1046,7 @@ Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately aft
 
 For each `recut` entry, on **both** endpoints, in this order:
 
-1. Post a `## Frame (gatekeeper)` comment — the same body Step 4 defines, rendered from the frame block Step 3 already parsed for that package:
+1. Post a `## Frame (gatekeeper)` comment — the same body Step 4 defines, rendered from the frame block Step 3 already parsed for that package; its machine block is rendered from those same values:
 
 ```
 add_comment(project_id, ticket_id=<endpoint>, body=…)
@@ -1021,6 +1065,8 @@ Not proven by this package: <clause> — … — one line per `unprovable_here` 
 <closing sentence — pick by trigger, never more than one>
 
 Object by replying on this ticket.
+
+<stdout of render-machine-blocks.py, without chain — frame block only, Step 3>
 ```
 
 On the **target** (`to`) endpoint, this line renders:
@@ -1076,6 +1122,8 @@ Premises to verify before planning: <p1>; <p2>; … — rendered exactly as Step
 Not proven by this package: <clause> — this package's own PR run cannot produce that evidence; do not plan for it, and its absence is not a gap.
 
 <closing sentence — pick by trigger, never both>
+
+<stdout of render-machine-blocks.py, without chain — frame block only, Step 3>
 ```
 
 The `Not proven by this package:` line appears once per `unprovable_here`
@@ -1092,8 +1140,9 @@ premise(s) above before planning." When `unprovable_here:` is not `none`,
 neither of those is true and this one takes precedence over both: "The
 clause(s) named above stay in the ticket body but are not proven by this
 package; it is built and reviewed against the acceptance criterion above."
-Every variant ends with the same final line: "Object by replying on this
-ticket."
+Every variant ends with the same final prose line: "Object by replying on
+this ticket." The machine block follows it, after one blank line, as
+Step 3 defines.
 
 This comment is load-bearing, not decoration: the lower plugin's
 `context-extractor` reads the package ticket's comments, and this is the only
@@ -1104,8 +1153,10 @@ tries to satisfy it and the plan-critic calls its absence a gap — that is how
 `lib-python-harness#27` reached `blocked` ("the AC requires the live suite to
 execute in this PR's own run"). `run`'s `triage` answers such a `blocked`
 event from this line. Idempotent like
-Step 3.6 — skip it when an identical `## Frame (gatekeeper)` comment already
-exists. Then:
+Step 3.6 — skip it when a `## Frame (gatekeeper)` comment with identical
+prose already exists. Compare the lines above the machine block only: an
+older frame comment posted before the block existed is identical, and is not
+re-posted just to add one. Then:
 
 ```
 update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>}, response="light")
@@ -1184,6 +1235,7 @@ this` for every chained package; `Planned but blocked: #<pkg> waits on #<b>,
 which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
+`machine block failed (#<pkg>): <error>` (Step 3);
 `clarify order cycle: #a, #b` (Step 3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
 2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:

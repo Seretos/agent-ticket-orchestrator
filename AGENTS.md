@@ -156,6 +156,18 @@ Hence three mandatory frame questions — symptom, measurement, prior attempts �
 
 **The frame is repaired, not asked about (2026-08-29).** The first version of this rule gated `STATUS: CLEAR` on the AC measuring the symptom and made the clarifier *ask* whether to extend it — and likewise asked whether to reframe a regression chain as a root-cause task. The first real pass (`lib-python-worktree` #156, #157, #158) produced eight questions, of which none was a decision: three were "extend the AC with the symptom, or keep the proxy?" (nobody picks the proxy), one was "reframe as root cause, or repeat the point fix that failed four times?", two recommended the ticket's own literal reading, one invented scope (cross-repo repair of an already-published release), and the last was a fail-open/fail-closed design choice whose "bad" outcome was a beta-only migration edge that heals on reboot — phrased in `StopDetail.reason` and `_pid_alive` call sites for a human who had not written the ticket and could not act on it. Hence: the clarifier **writes** the symptom AC (`ac:` in the frame block, posted by the gatekeeper as `## Frame (gatekeeper)` — load-bearing, because the lower plugin's `context-extractor` only sees the ticket's comments) and **applies** the reframe (`reframe:` in the frame block, stated in the `## Regression chain (gatekeeper)` comment), both with "object by replying on the ticket". A question must pass five filters in `agents/clarifier.md` § 3a (not the ticket's literal reading, no added scope, not a reframe, wrong answer costs a user something durable, answerable without the code open) and must open with an `**About:**` sentence for a reader who has not opened the ticket. The only frame-driven `NEEDS_INPUT` left is a defect whose symptom cannot be named at all.
 
+**The frame and chain comments end in a machine block (`#64`/`#77`).** `ecosystem-statistics#13` used to scrape chain members out of the `## Regression chain (gatekeeper)` table and frame facts out of `## Frame (gatekeeper)` prose. Every frame comment (Step 3.7, Step 4) now ends in
+
+```
+<!-- gatekeeper:frame v1
+ac_rewritten: yes|no
+premises: <n>
+not_proven: <n>
+-->
+```
+
+and the chain comment (Step 3.6) ends in that block plus, after one blank line, `<!-- gatekeeper:chain v1` / `members: owner/repo#N,owner/repo#M` / `-->` — members always qualified, in chain order. Only the chain comment carries the chain block. `scripts/gatekeeper/render-machine-blocks.py` is their only source: the gatekeeper pipes the parsed `clarifier:frame` values (`project`, `ac`, `premise`, `unprovable_here`, and `chain` for the chain comment only) as stdin JSON and appends stdout verbatim — the same stdin-JSON → stdout convention as `relation-readback.py` and `ato-event.py`; the model never counts, qualifies or formats a value. A script failure puts its `error:` line where the block would go and holds up nothing. Readers use the same dumb `key: value` reader as `adev:event`. The prose above the block is unchanged and stays the human source — nothing was replaced — and, as with `ato:event`, it is not an interface: reword it freely, but never drop or rename a key without changing the script and every reader.
+
 **A missing acceptance section is written, not asked about.** The same
 2026-08-29 principle extends to a ticket that has no acceptance section at
 all: when `ticket.acceptance_criteria` is empty or missing and the body
