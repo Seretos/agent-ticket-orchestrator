@@ -52,11 +52,14 @@ projects to the point where finding the asked-about tickets was work).
    **STOP** and tell the user to `/reload-plugins`, then re-invoke.
 2. **Board columns.** Call `list_board_columns(project_id)` and keep the
    `logical → native` map and the order the columns come back in — Step 0
-   ranks by that order. `Backlog` (listed first), `Planned` and `Question`
-   must all be returned as *logical* names. If one is missing, **STOP** with a
-   clear message: the project's `board.columns` in `~/.seretos/projects.yml`
-   must list them, `Backlog` first — `ensure_board_column` can create a
-   missing one but needs `permissions.board.manage`. Never hardcode a native
+   ranks by that order, and a ticket with no status label counts as
+   Backlog. `Backlog`, `Planned` and `Question` must all be returned as
+   *logical* names, and `Backlog` must be the first column returned. If one
+   is missing, or `Backlog` is present but not first, **STOP** with a clear
+   message naming which: the project's `board.columns` in
+   `~/.seretos/projects.yml` must list all three, `Backlog` first —
+   `ensure_board_column` can create a missing one but needs
+   `permissions.board.manage`; the order is fixed only in that file. Never hardcode a native
    name ("Frage offen" vs "Question" is a per-project choice; the logical
    name is the contract).
 3. **Write permission.** From the resolved project entry read `permissions.issues.create` and
@@ -1090,7 +1093,7 @@ are all in the Question column — then run
   and Question → Planned moves.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body. The one close you make is Step
-  1b's `close: yes`, on a reopened ticket whose work has since merged.
+  0's `close: yes`, on a reopened ticket whose work has since merged.
 - **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the prose half of a lane split and an epic (both Step 2).
 - **You never apply a size-driven cut.** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); the only `recut` you apply is the lane split's.
 - **Bundle before clarify**, always.
