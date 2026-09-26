@@ -151,14 +151,20 @@ def test_render_every_reason(reason):
 
 def test_render_omitted_pr_and_merge_sha_are_empty():
     """Additional coverage: omitted --pr/--merge-sha render as empty, not
-    absent -- all five keys are always emitted."""
+    absent -- all five keys are always emitted. Checks presence of the key
+    line itself (not just `.get` with a default), so a renderer that simply
+    drops the key when unset -- rather than emitting it empty -- fails
+    here."""
     result = run_render("--event", "merged", "--package", "63",
                          "--reason", "merge-conflict")
     assert result.returncode == 0, result.stdout + result.stderr
     block = read_block(result.stdout)
     assert block is not None
-    assert block.get("pr", "") == ""
-    assert block.get("merge_sha", "") == ""
+    assert "pr" in block, f"pr key line missing from block: {result.stdout!r}"
+    assert block["pr"] == ""
+    assert "merge_sha" in block, \
+        f"merge_sha key line missing from block: {result.stdout!r}"
+    assert block["merge_sha"] == ""
 
 
 def test_render_triage_answered_with_reason():
@@ -175,12 +181,17 @@ def test_render_triage_answered_with_reason():
 
 def test_render_triage_answered_without_reason_is_empty():
     """Additional coverage: reason is optional for `triage-answered` /
-    `merged` -- omitting it renders an empty `reason:`, not a rejection."""
+    `merged` -- omitting it renders an empty `reason:`, not a rejection.
+    Checks the key line is actually present (not just `.get` with a
+    default), so a renderer that drops the key entirely when unset -- rather
+    than emitting it empty -- fails here."""
     result = run_render("--event", "triage-answered", "--package", "63")
     assert result.returncode == 0, result.stdout + result.stderr
     block = read_block(result.stdout)
     assert block is not None
-    assert block.get("reason", "") == ""
+    assert "reason" in block, \
+        f"reason key line missing from block: {result.stdout!r}"
+    assert block["reason"] == ""
 
 
 # --- R2: block reads back regardless of wording (the ticket's symptom) ----
@@ -272,45 +283,54 @@ def test_parse_no_block_is_exit_1():
 # --- R3: reject out-of-vocabulary input -------------------------------------
 
 RENDER_REJECTIONS = [
-    (["--event", "bogus", "--package", "63"], "unknown event"),
-    (["--event", "merged", "--package", "63", "--reason", "bogus"], "unknown reason"),
-    (["--event", "escalated", "--package", "63"], "escalated without reason"),
-    (["--event", "merged", "--package", ""], "empty package"),
-    (["--event", "merged", "--package", "63\nx"], "package with embedded newline"),
-    (["--event", "merged", "--package", "63-->x"], "package with close-comment marker"),
+    (["--event", "bogus", "--package", "63"], "unknown event", "bogus"),
+    (["--event", "merged", "--package", "63", "--reason", "bogus"], "unknown reason", "bogus"),
+    (["--event", "escalated", "--package", "63"], "escalated without reason", "reason"),
+    (["--event", "merged", "--package", ""], "empty package", "package"),
+    (["--event", "merged", "--package", "63\nx"], "package with embedded newline", "package"),
+    (["--event", "merged", "--package", "63-->x"], "package with close-comment marker", "package"),
     (["--event", "merged", "--package", "63", "--reason", "merge-conflict",
-      "--pr", "12\n34"], "pr with embedded newline"),
+      "--pr", "12\n34"], "pr with embedded newline", "pr"),
 ]
 
 
-@pytest.mark.parametrize("args,desc", RENDER_REJECTIONS,
-                         ids=[desc for _, desc in RENDER_REJECTIONS])
-def test_render_rejects(args, desc):
+@pytest.mark.parametrize("args,desc,needle", RENDER_REJECTIONS,
+                         ids=[desc for _, desc, _ in RENDER_REJECTIONS])
+def test_render_rejects(args, desc, needle):
     """Requirement R3: every listed rejection -> exit 1, empty stdout,
-    `error:` on stderr."""
+    `error:` on stderr naming the specific offending value/field for this
+    case (not just the literal word "error:", which a single fixed message
+    shared across every rejection would also satisfy)."""
     result = run_render(*args)
     assert result.returncode == 1, f"{desc}: stdout={result.stdout!r} stderr={result.stderr!r}"
     assert result.stdout == "", f"{desc}: expected empty stdout, got {result.stdout!r}"
-    assert "error:" in result.stderr.lower(), f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    stderr_lower = result.stderr.lower()
+    assert "error:" in stderr_lower, f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    assert needle in stderr_lower, \
+        f"{desc}: expected {needle!r} named in stderr; stderr={result.stderr!r}"
 
 
 PARSE_REJECTIONS = [
-    (make_block(event="bogus"), "unknown event"),
-    (make_block(reason="bogus"), "unknown reason"),
-    (make_block(event="escalated", reason=""), "escalated without reason"),
-    (make_block(package=""), "empty package"),
+    (make_block(event="bogus"), "unknown event", "bogus"),
+    (make_block(reason="bogus"), "unknown reason", "bogus"),
+    (make_block(event="escalated", reason=""), "escalated without reason", "reason"),
+    (make_block(package=""), "empty package", "package"),
 ]
 
 
-@pytest.mark.parametrize("text,desc", PARSE_REJECTIONS,
-                         ids=[desc for _, desc in PARSE_REJECTIONS])
-def test_parse_rejects(text, desc):
+@pytest.mark.parametrize("text,desc,needle", PARSE_REJECTIONS,
+                         ids=[desc for _, desc, _ in PARSE_REJECTIONS])
+def test_parse_rejects(text, desc, needle):
     """Requirement R3: the same validation applies on the `parse` side, once
-    a block is actually found."""
+    a block is actually found. Same case-specific-content strengthening as
+    `test_render_rejects`."""
     result = run_parse(text)
     assert result.returncode == 1, f"{desc}: stdout={result.stdout!r} stderr={result.stderr!r}"
     assert result.stdout == "", f"{desc}: expected empty stdout, got {result.stdout!r}"
-    assert "error:" in result.stderr.lower(), f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    stderr_lower = result.stderr.lower()
+    assert "error:" in stderr_lower, f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    assert needle in stderr_lower, \
+        f"{desc}: expected {needle!r} named in stderr; stderr={result.stderr!r}"
 
 
 # --- R4: forward guard (vacuous today; see plan) ----------------------------
