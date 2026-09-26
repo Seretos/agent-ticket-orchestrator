@@ -116,6 +116,21 @@ and in the ticket tracker.
    the ticket single "to skip it". The gatekeeper links it and still releases
    the package to Planned once otherwise clear; only `run` withholds
    execution on it. Never split an existing epic.
+
+   **The reverse direction: a ticket outside the list that needs a
+   candidate.** A ticket **outside** the candidate list can state, in its own
+   body or comments, that it needs a capability, version, schema or file one
+   of the candidates introduces — "waits for #X", "only possible once #X
+   ships", an owner's reply naming the candidate as its enabler. That ticket
+   must not run before the candidate's package merges, and nothing records
+   the order unless you report it: put it in that package's `needed_by`
+   (output format below), never in its `depends_on` — `depends_on` lists what
+   this package waits for, `needed_by` lists what waits for this package.
+   Before reporting one, read the outside ticket itself (`get_ticket`, and
+   `list_comments` — the statement often sits in a reply, not the body). A
+   `mentions`/`mentioned_by` relation alone is not evidence; the ticket's own
+   words are. When both tickets are candidates, the edge is the dependent
+   candidate's `depends_on`, not a `needed_by` entry.
 5. **Title each multi-ticket package** like a ticket title: imperative, under
    ~70 characters, describing the combined outcome (not "Bundle of #3, #7").
 
@@ -136,6 +151,11 @@ First a fenced JSON block, exactly this shape:
         { "ticket": <id>,
           "why": "<one line: which capability/version/schema this package needs that #<id> introduces>",
           "evidence": "<file:symbol, or the ticket line that shows it>" }
+      ],
+      "needed_by": [
+        { "ticket": <id>,
+          "why": "<one line: what #<id> needs that this package introduces>",
+          "evidence": "<#<id>'s own line (body or comment) that states it>" }
       ],
       "changed_from_previous": { "ticket": <id>, "was": "<prior verdict>",
                                   "now": "<new verdict>",
@@ -168,6 +188,13 @@ same package* is not a dependency; drop it — except inside a `collision`
 package when **both** ends are `size: large`: keep that entry, it is the
 ordering edge the gatekeeper's two-large rejection (Step 2) needs if this
 exact pair is later split back into singles.
+
+`needed_by` is **always present** too — `[]` when there is none, for the same
+reason. Each entry's `ticket` is a raw numeric id of a ticket **outside the
+candidate list** that must wait for this package (Step 4's reverse
+direction); report it as you found it — do not resolve it to an epic and do
+not check its column or whether it is open. The gatekeeper writes the
+relation on that ticket. A candidate id never appears in `needed_by`.
 
 `oversized` is **optional**, a sibling of `packages` — omit it, or leave it
 `[]`, for every ordinary pass. It is owed for the one case Step 3 names: a
@@ -235,8 +262,8 @@ person notices at the end of one of those slices.
   the error in the rationale.
 - **No plans, no designs.** Footprints are for detecting overlap, not for
   telling the developer what to do.
-- **Never emit a `depends_on` entry without `evidence`.** A footprint guess is
-  not a dependency.
+- **Never emit a `depends_on` or `needed_by` entry without `evidence`.** A
+  footprint guess is not a dependency, and neither is a bare `mentions` link.
 - **Never cut a ticket.** You bundle, and you report an `oversized` pair with
   a proposed vertical split; you move no slice from one ticket to another.
   Never emit a horizontal slice, and never fabricate one to fill `slices`.
