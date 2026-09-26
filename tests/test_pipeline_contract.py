@@ -30,6 +30,7 @@ a real ticket.
 import pathlib
 import re
 
+import pytest
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -320,14 +321,153 @@ def test_run_reads_relations_before_dispatch():
     assert "blocked_by" in section
 
 
-def test_run_defines_resolved_as_done_column_or_closed_off_board():
-    text = _read(RUN)
+# --- #56 R7: forward-compatible with #45's future Done-column removal ------
+# #56 merges before #45 rewrites skills/run/SKILL.md to drop Done as a board
+# column; the suite must stay green on today's text (Done still present) and
+# on #45's eventual text (Done gone).
+#
+# R7b (this helper) has no fixture-based "survives #45" test: a synthetic
+# fixture written by this ticket can only prove that the fixture's own tokens
+# satisfy the check, never that the check verifies actual meaning in prose
+# #45 (a different, not-yet-run package) has not written yet -- test-critic
+# flagged that self-referential tautology three rounds running
+# (.adev/56-1/test-critic-3/critique-merged.json). R7's own acceptance
+# criterion only asks that this test expect `closed` instead of a `Done`
+# column, which `test_run_defines_resolved_as_closed` below already does
+# against the real file; the negative-case tests below it exercise the
+# helper's ability to actually reject, which is what stands in for RED/GREEN
+# evidence here since #56 does not change SKILL.md itself.
+
+def _assert_blocker_resolved_by_closed(text: str) -> None:
+    """(#56 R7b round 5, test-critic round 4) A bare `\\bclosed\\b` +
+    substring check cannot tell the required rule from its negation -- a
+    section reading "resolved once Done; need not be closed" contains both
+    tokens and would pass. Mirrors the structural-extraction technique
+    `_assert_run_required_columns` and the `result (...)` capture in
+    `test_run_report_vocabulary_drops_review_and_not_permitted` already use
+    elsewhere in this file: pull the specific enumerated closed-condition
+    (list item 3 of the "resolved when any of" list) out with a targeted
+    regex and require the declarative `#b is status: closed` form inside it,
+    not just the word anywhere in the section. `Closes #<n>` stays a plain
+    substring check -- it is the secondary PR-linking mention, not the
+    condition under test, and has no plausible negated phrasing to guard
+    against."""
     assert "### When is a blocker resolved" in text
     section = _slice(text, "### When is a blocker resolved", "### 2. Per package, sequentially")
-    assert "custom_fields" in section
-    assert "Done" in section
-    assert "closed" in section
+    m = re.search(r"\n\s*3\.\s+(.*?)\n\s*\n", section, re.S)
+    assert m, "the enumerated closed-condition (list item 3) must be present"
+    item3 = " ".join(m.group(1).split())
+    assert re.search(r"`#b`\s+is\s+`status:\s*closed`", item3), item3
     assert "Closes #<n>" in section
+
+
+def test_run_defines_resolved_as_closed():
+    _assert_blocker_resolved_by_closed(_read(RUN))
+
+
+def test_assert_blocker_resolved_by_closed_rejects_text_missing_closed():
+    """(#56 R7b, test-critic F1; tightened round 5, test-critic round 4) The
+    helper must actually be able to reject, not just accept -- a section
+    with the right heading, a proper enumerated list and a `Closes #<n>`
+    reference, but whose item 3 never states the declarative `#b is
+    status: closed` form, states a different resolution rule and must fail,
+    proving the helper is not `pass`-shaped."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` counts as resolved once `run` itself decides it no longer\n"
+        "   matters, regardless of its board state. See Closes #<n> for the\n"
+        "   unrelated PR-linking convention.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_rejects_missing_heading():
+    """(#56 R7b, test-critic F1) Text that never states the required heading
+    at all -- even though 'closed' and 'Closes #<n>' both appear somewhere --
+    must be rejected, since the heading is what scopes the rule to the right
+    section."""
+    bad_text = (
+        "### Some unrelated heading\n\n"
+        "This ticket is closed. Closes #<n>.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_rejects_missing_closes_reference():
+    """(#56 R7b, test-critic round 2 F1; tightened round 5, test-critic round
+    4) Text with the right heading and a proper item 3 stating the
+    declarative `#b is status: closed` form, but no `Closes #<n>` reference
+    anywhere in the section, states a resolution rule that never requires
+    the PR-linking convention -- a helper that omits the `Closes #<n>`
+    assertion would pass this fixture silently, so this case must fail on
+    its own, and specifically not for the item-3 structural reason the two
+    tests above already cover."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` is `status: closed`, regardless of how it came to be\n"
+        "   closed.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_rejects_negated_closed_condition():
+    """(#56 R7b round 5, test-critic round 4) A section that states the
+    *negation* of the closed condition ("need not be closed") still contains
+    the bare word `closed` and a `Closes #<n>` reference, so it would pass
+    the old `\\bclosed\\b` + substring check silently -- exactly the gap the
+    test-critic flagged. The tightened helper must require the specific
+    declarative `#b` is `status: closed` structural form, not just the bare
+    word floating anywhere in the section."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` need not be `status: closed` to count as resolved -- being\n"
+        "   in the Done column already covers it. See Closes #<n> for the\n"
+        "   unrelated PR-linking convention.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_accepts_text_without_done_or_custom_fields():
+    """(#56 R7b, test-critic round 5 F1) R7b's whole point is that the helper
+    no longer *requires* (though it does not forbid) `Done`/`custom_fields` --
+    every fixture above proves only the reject side of that. This hand-written
+    text has the right heading, the declarative `#b is status: closed` item 3
+    and a `Closes #<n>` reference, but never mentions `Done` or `custom_fields`
+    anywhere; an unchanged OLD helper that still additionally required both
+    words present (in addition to `closed`/`Closes #<n>`) would reject this
+    text, so a clean pass here is genuine evidence the accept path holds
+    without them -- not a restatement of `test_run_defines_resolved_as_closed`,
+    which exercises today's real SKILL.md, where both words still happen to
+    appear elsewhere in the file."""
+    good_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved when any of:\n\n"
+        "1. Something.\n\n"
+        "2. Something else.\n\n"
+        "3. `#b` is `status: closed`. See Closes #<n> for the PR-linking\n"
+        "   convention.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    assert "Done" not in good_text
+    assert "custom_fields" not in good_text
+    _assert_blocker_resolved_by_closed(good_text)  # must not raise
 
 
 def test_run_orders_topologically_with_board_order_tiebreak():
@@ -2700,17 +2840,19 @@ def test_run_precondition_3_still_reads_pulls_merge():
     assert re.search(r"read\s+`permissions\.pulls\.merge`", p3)
 
 
-def test_run_required_columns_drop_review():
-    """(#31 R2) Precondition 2 lists Todo/Doing/Done/Question only; existing
-    boards keep an extra column, which run neither reads nor requires. The
-    clause is phrased without the capitalised column name on purpose, so the
-    file-wide absence test below can hold at the same time."""
-    text = _read(RUN)
+def _assert_run_required_columns(text: str) -> None:
+    """(#31 R2, forward-compatible per #56 R7) Precondition 2 lists
+    Todo/Doing/Question, with Done optional (present today, gone once #45
+    lands) and nothing else in its place; existing boards keep an extra
+    column, which run neither reads nor requires. The clause is phrased
+    without the capitalised column name on purpose, so the file-wide absence
+    test below can hold at the same time."""
     pre = _slice(text, "## Preconditions (per project)", "3. **Merge permission.**")
     item2 = pre[pre.index("2. **Board columns.**"):]
     m = re.search(r"logical\s+columns\s+((?:`\w+`[,\s]*(?:and\s+)?)+)", item2)
     assert m, "Precondition 2 must list the required logical columns"
-    assert re.findall(r"`(\w+)`", m.group(1)) == ["Todo", "Doing", "Done", "Question"], m.group(1)
+    cols = re.findall(r"`(\w+)`", m.group(1))
+    assert [c for c in cols if c != "Done"] == ["Todo", "Doing", "Question"], cols
     assert not re.search(r"\bReview\b", pre)
     sentences = re.split(r"(?<=[.!?])\s+", " ".join(item2.split()))
     assert any(
@@ -2718,6 +2860,79 @@ def test_run_required_columns_drop_review():
         and re.search(r"neither reads nor requires|does not read|never reads", sn, re.I)
         for sn in sentences
     ), "one sentence of Precondition 2 must say existing boards with an extra column stay valid and unread"
+
+
+_POST_45_COLUMNS_FIXTURE = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Todo`, `Doing`, `Question`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+def test_run_required_columns_drop_review():
+    _assert_run_required_columns(_read(RUN))
+
+
+_BAD_COLUMNS_FIXTURE_MISSING_TODO = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Doing`, `Question`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+_BAD_COLUMNS_FIXTURE_EXTRA_COLUMN = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Todo`, `Doing`, `Question`, `Blocked`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+def test_assert_run_required_columns_rejects_missing_todo():
+    """(#56 R7a, test-critic F2) The helper must actually be able to reject a
+    columns list that dropped a required column, not merely re-confirm a
+    fixture the test itself wrote to already satisfy the rule."""
+    with pytest.raises(AssertionError):
+        _assert_run_required_columns(_BAD_COLUMNS_FIXTURE_MISSING_TODO)
+
+
+def test_assert_run_required_columns_rejects_unexpected_extra_column():
+    """(#56 R7a, test-critic F2) 'rejects anything else' includes an
+    unexpected extra column such as `Blocked` sitting alongside the required
+    three -- a filter that merely keeps the known columns and drops the rest
+    would wrongly accept this."""
+    with pytest.raises(AssertionError):
+        _assert_run_required_columns(_BAD_COLUMNS_FIXTURE_EXTRA_COLUMN)
+
+
+@pytest.mark.parametrize("kind", ["columns"])
+def test_run_contract_survives_done_as_closed(kind):
+    """(#56 R7a) The columns rule must hold both on today's SKILL.md (Done
+    still a board column) and on a fixture shaped like #45's future rewrite
+    (Done gone entirely) -- #56 merges first and cannot predict #45's exact
+    prose, only that Done becomes optional/absent. There is no "blocker" case
+    here any more: a synthetic fixture for the blocker-resolution prose can
+    only prove itself, not that the check verifies #45's actual (not yet
+    written) wording -- see the comment above `_assert_blocker_resolved_by_closed`."""
+    _assert_run_required_columns(_read(RUN))
+    _assert_run_required_columns(_POST_45_COLUMNS_FIXTURE)
 
 
 def test_review_column_is_gone_from_the_contract():
