@@ -376,27 +376,63 @@ answered it from the ticket comment alone, no retry session needed.
 So instead of setting the package aside:
 
 1. Dispatch the **triage** subagent (fresh, unnamed, synchronous) with the `blocked` event's
-   question, options, recommendation, and what was already checked, plus `project_id`, `package`,
-   `local_path` and `lane=<code|prose>` (`prose` when the package carries `lane:prose`). It reads ticket, comments, siblings and code — the same test the `clarifier`
+   question, options, recommendation, what was already checked and its `attempt:` value, plus
+   `project_id`, `package`, `local_path` and `lane=<code|prose>` (`prose` when the package
+   carries `lane:prose`). It reads ticket, comments, siblings and code — the same test the `clarifier`
    already applies to Backlog questions — and ends `STATUS: ANSWERED` (a chosen option plus
    reasoning) or `STATUS: ESCALATE` (why it is not answerable from context).
-2. **`ANSWERED`** → `add_comment(project_id, ticket_id=<package>, body=…)` with heading
+2. **`ANSWERED`, and the answer carries no `<!-- triage:split v1` block** →
+   `add_comment(project_id, ticket_id=<package>, body=…)` with heading
    `## Blocked triage (run)`, the question, the chosen option, and the reasoning — then
    immediately re-dispatch (step 2b, same script, `attempt+1`, same worktree). The lower plugin's
    `context-extractor` re-reads the ticket transcript on the next attempt and picks the answer up;
    no change to its contract. Do **not** wait for every other Todo package to have its turn first —
    the whole point is that nothing about this answer changes by waiting.
-3. **`ESCALATE`** → `add_comment` with the original question plus one line — *"Escalated: not
+3. **`ANSWERED`, and the answer carries a `<!-- triage:split v1 … -->` block** → the prose lane
+   found requirements it may not build, and the answer is to split them into a code ticket. A
+   re-dispatch would hit the same wall, so the split replaces it:
+   1. `add_comment(project_id, ticket_id=<package>, body=…)` with heading
+      `## Blocked triage (run)`, the question, the chosen option, the reasoning, and the
+      `triage:split v1` block copied verbatim from triage's answer. That block is what the
+      gatekeeper reads.
+   2. `worktree_remove(environment_id=<id>)`. Do not move the card — it stays in **Doing** — and
+      do not re-dispatch the package.
+   3. Start exactly one gatekeeper split session, yourself, with `Bash(run_in_background: true)`:
+
+      ```
+      bash "${CLAUDE_PLUGIN_ROOT}/scripts/start-package-session.sh" --gatekeeper-split <project_id> <package> "<local_path>"
+      ```
+
+      It runs the gatekeeper on this one ticket, from the main checkout, with the two arguments
+      that let it file the code half and move both tickets to Todo. Then stop and wait for the
+      completion notification exactly as in step 2b. While it runs, the gatekeeper is the
+      ticket's one writer: you do not comment on it or move it.
+   4. Scan the headings with
+      `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`.
+      For a `## Lane split (gatekeeper)` comment **newer than your `## Blocked triage (run)`
+      comment**, fetch that one comment in full with
+      `get_comment(project_id, comment_id=<its id>, ticket_id=<package>)`. When its
+      `gatekeeper:lane` block carries `code_ticket: #<n>`, the split landed: result `Skipped`,
+      note `split: code half #<n>`. The split session has already put
+      both tickets where they belong (Todo, or Question when the gatekeeper had to ask); you
+      move neither, and you do not pick either up in this run — Step 1a's order is computed
+      once, and the next run finds them.
+   5. No such comment, or its block carries no `code_ticket:` → `add_comment` with one line — *"Escalated: the gatekeeper split session
+      ended without a lane split — see the `triage:split` block above."* — → **Question**, note
+      `split-failed`. The block stays on the ticket, so the next gatekeeper pass a human starts
+      finds the card and applies the split into Planned.
+4. **`ESCALATE`** → `add_comment` with the original question plus one line — *"Escalated: not
    answerable from ticket, comments or code — see the blocked event above."* — → **Question**,
    `worktree_remove`. Do not spend a retry session on a question triage already told you a retry
    cannot resolve.
-4. **Triage once per package per run.** Before dispatching triage, check whether this package's
+5. **Triage once per package per run.** Before dispatching triage, check whether this package's
    ticket already carries a `## Blocked triage (run)` comment from earlier in this run
    (`list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`,
    search for the heading). If it does, a second `blocked` event goes straight to
    the `ESCALATE` reaction above — a triage-answered redispatch that blocks again means the answer
    did not hold or a materially different question surfaced, and either way a second guess is not
-   this system's to make alone.
+   this system's to make alone. The split session of item 3 inherits this bound: it takes the
+   place of the triage-driven re-dispatch, so a package gets at most one of the two per run.
 
 This replaces the old two-stage design entirely: there is no more "second pass at the end of the
 run" for `blocked` packages, and `blocked_list` does not exist. A `blocked` event is triaged the
@@ -516,12 +552,16 @@ continue. A stuck worktree never blocks the next package.
 One table: `package · result (Done / Question / Skipped) · note · PR
 · rounds (from the last event's `rounds`) · attempts`. `Done` in the result
 column means the PR merged and the package ticket is closed — a result, not a
-column. `note` is empty for a
+column. A package the gatekeeper split session split (2c, *Blocked events are
+triaged*) is `Skipped` with the note `split: code half #<n>`: like every
+skip, it is not processed further in this run, and its two tickets wait where
+the split session left them (Todo, or Question when the gatekeeper had to
+ask). `note` is empty for a
 clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `blocked-escalated`,
 `manual cleanup: <path>`, `skipped: blocked by #<b> (not closed)`,
 `skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`,
-`skipped: prose lane not installed`.
+`skipped: prose lane not installed`, `split: code half #<n>`, `split-failed`.
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
 one line per sequencing violation observed during the run, and one line per
 dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,
@@ -529,17 +569,19 @@ processed in board order`) — all named above.
 
 The run is **SUCCESS only if every package reached Done**. Anything else is
 **PARTIAL** with the list of what is not Done and which column it sits in. A skipped
-package makes the run PARTIAL, correctly — it is not Done. But it is a
-**benign** partial that names its own blocker and its own next step, unlike a
-failure; do not blur the two in the report. Never silently drop a package,
+package — a split one included — makes the run PARTIAL, correctly — it is not
+Done. But it is a **benign** partial that names its own blocker (or its new
+code half) and its own next step, unlike a failure; do not blur the two in the
+report. Never silently drop a package,
 and never write a "not included" list into any PR — the PR belongs to the
 lower plugin and describes one package only.
 
 ## Waiting rule
 
 This skill never waits on a human and never polls CI. The only thing it ever
-waits on is the completion notification of the `claude -p` process it
-started in step 2b. Everything slower than that (CI rounds of up to 45
+waits on is the completion notification of a `claude -p` process it
+started itself: a package session (step 2b), or the one gatekeeper split
+session of step 2c. Everything slower than that (CI rounds of up to 45
 minutes, three review rounds) happens *inside* that process. So a single
 package can occupy you for hours; that is fine. Do not start a second
 package to "use the time".
@@ -635,13 +677,16 @@ Three changes close that hole, all documented at their point of use above:
 no-terminal-event retry (2c, now preceded by the pre-retry CI check, which
 does not itself spend the budget), one rebase retry (the conflict path), and
 one triage-driven re-dispatch when a `blocked` event turns out to be
-`ANSWERED` (also 2c — see *Blocked events are triaged before they cost a
-retry*, above). A package can legitimately reach `attempt=3` — failed once,
+`ANSWERED` — or, when that answer carries a `triage:split v1` block, one
+gatekeeper split session in its place (also 2c — see *Blocked events are
+triaged before they cost a retry*, above). A package can legitimately reach `attempt=3` — failed once,
 `ci-green` on the second try, conflicted and rebased on the third — and
 `attempt` stays a monotonically increasing session counter across all of it,
-exactly as it already was. **Hard ceiling: at most three sessions per package
-per run, at most one of which is a rebase session, at most one of which is a
-triage-driven re-dispatch.** A shared counter would reproduce the exact dead
+exactly as it already was. **Hard ceiling: at most three package sessions per
+package per run, at most one of which is a rebase session, at most one of
+which is a triage-driven re-dispatch.** The split session is not a package
+session and does not raise `attempt`; it uses up the triage-driven
+re-dispatch's slot, and a split package gets no further session in this run. A shared counter would reproduce the exact dead
 end this incident describes: a package that spent its one retry on an earlier
 crash, then reached `ci-green`, then had nothing left for a purely mechanical
 conflict.
@@ -662,15 +707,20 @@ as an ordinary retry, just `attempt+1`.
 - **Unnamed dispatches only.** Every `Agent` call is synchronous and without
   `name`; never `SendMessage`, never resume. Retry = fresh dispatch with
   `attempt+1`.
-- **One writer per ticket during a session.** While a package session is
-  running, you do not comment on or move that ticket. The lower plugin writes
-  the events; you react afterwards.
+- **One writer per ticket during a session.** While a package session or a
+  gatekeeper split session is running, you do not comment on or move that
+  ticket. The session writes; you react afterwards.
+- **The gatekeeper is started only as the split session.** Only for a triage
+  `ANSWERED` that carries a `triage:split v1` block, only through
+  `start-package-session.sh --gatekeeper-split`, and at most once per package
+  per run (2c). Every other gatekeeper pass is a human's to start.
 - **Never edit code**, never run tests, never open or push branches yourself.
   `Edit`/`Write` are not part of this skill's job even if available.
 - **Never touch Backlog or Planned.** Never move anything *out of* Question —
   that direction is human-only (→ Todo or → Backlog).
 - **Column writes plus the one close are the status channel; comments only where this skill says**
   (failure summary before → Question, the one-line escalation, the
+  `## Blocked triage (run)` comment, the one-line `split-failed` escalation, the
   merge-failed notes, and the merge-outcome
   classification's own comments: both merge attempts on a persisted conflict,
   the one-line escalation after a `blocked` rebase).

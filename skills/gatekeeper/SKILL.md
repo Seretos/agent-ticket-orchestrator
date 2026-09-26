@@ -1,7 +1,7 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned. Never moves anything to Todo, never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
+description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned. A pass a human starts never moves anything to Todo; the one pass that does is the split session `run` starts (single_ticket=<id> advance_to_todo=true) when a dispatched prose-lane ticket turns out to need code: it files the code half as its own ticket, blocks the original on it, and moves both to Todo. Never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
@@ -9,8 +9,12 @@ description: Board pre-flight — bundles open Backlog tickets into work package
 You prepare the board for an unattended `run`. You turn the raw **Backlog**
 into **work packages** and move every package whose questions are settled to
 **Planned**. The human then hand-picks what the night shift gets by moving
-Planned → Todo. You never do that last move: Todo is the one column only a
-human writes.
+Planned → Todo. In a pass a human starts you never make that last move. The
+one pass that writes Todo is the split session `run` starts after dispatch
+(`single_ticket=` with `advance_to_todo=true`, see Inputs and Step 4a): the
+ticket it splits was already moved to Todo by a human, and moving its two
+halves back there carries that human decision forward — you never make a
+new one.
 
 **Nothing in this skill blocks on a chat answer.** `AskUserQuestion` is not
 part of this flow, for the same reason it is not granted to `run` or the
@@ -44,6 +48,23 @@ projects to the point where finding the asked-about tickets was work).
   resolved entry.
 - The project's `local_path` (read from the resolved project entry) — handed to the subagents
   so they can look at the code.
+- `single_ticket=<id>` — **optional; only `run`'s split session passes it**
+  (`scripts/start-package-session.sh --gatekeeper-split`). It limits the pass
+  to that one ticket, and only when the ticket carries an *unapplied split
+  block* (defined in Step 1): Step 0 checks that ticket alone, Step 1
+  enumerates nothing else, and Step 2 applies the mid-development split to
+  it without the bundler or the lane script. A ticket without an unapplied
+  split block → report `nothing to split: #<id>` and stop, having written
+  nothing.
+- `advance_to_todo=true` — **optional; valid only together with
+  `single_ticket=`.** It lets Step 4a move the tickets of that one split,
+  once this pass has cleared them to Planned, on to Todo. Given without
+  `single_ticket=` → **STOP** before Step 0, write nothing, and say that
+  `advance_to_todo` needs `single_ticket`.
+
+  A pass started without these two arguments — every pass a human starts —
+  never writes Todo, and claims a card carrying an `adev:event` comment only
+  through Step 1's split-block clause, into Planned at most.
 
 ## Preconditions
 
@@ -86,6 +107,10 @@ per ticket. One call:
 ```
 list_tickets(project_id, status="open", limit=100, omit_body=True, omit_nulls=True)
 ```
+
+In a split pass (`single_ticket=<id>`), read only that ticket instead —
+`get_ticket(project_id, <id>)` — and apply the rest of this step to it
+alone.
 
 For every ticket carrying **two or more** labels whose prefix before the
 first `:` is `status` (any case), pipe one JSON object on **stdin** to
@@ -132,6 +157,32 @@ it on a Question card `run` owns is not touching that card in the sense of
 the Hard rules — its state is the same afterwards, only no longer ambiguous.
 
 ## Step 1 — enumerate the Backlog, and your own answered Question cards
+
+**An unapplied split block** is how a prose-lane ticket asks for a
+mid-development split: after dispatch the prose lane found requirements it
+may not build, `triage` answered with the split, and `run` posted that answer.
+A ticket carries one when all three hold, read from a heading scan
+`list_comments(project_id, ticket_id, order="desc", limit=20, body_max_chars=200)`
+plus `get_comment(project_id, comment_id=<id>, ticket_id=<ticket>)` for each
+comment whose content you need:
+
+1. its newest `## Blocked triage (run)` comment contains a
+   `<!-- triage:split v1` block;
+2. that comment is newer than the ticket's newest `<!-- adev:event` comment
+   — the package was not dispatched again after it;
+3. none of its `## Lane split (gatekeeper)` comments carries `code_ticket:`
+   in its `gatekeeper:lane` block — a ticket is split after dispatch at most
+   once, ever.
+
+**A split pass enumerates nothing.** With `single_ticket=<id>`, skip the four
+calls below and every filter of this step. Run `get_ticket(project_id, <id>, include_relations=True)`
+and the three-part test above on that one ticket. It holds → the ticket is
+the pass's only candidate, in whatever column it sits (Doing while `run`'s
+split session waits, or Question after a failed one), and goes straight to
+Step 2's mid-development split. It does not hold → report
+`nothing to split: #<id>` and stop.
+
+Every other pass enumerates:
 
 ```
 list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])
@@ -187,9 +238,18 @@ bundler may fold further tickets into them or leave them as-is.
    ticket, the owner answers *there* — apply this test to that ticket's
    comments instead, so both cards of the pair return in the same pass.
 
-Cards that pass go into the candidate list like any Backlog ticket — they
+**A Question card carrying an unapplied split block is yours too**, although
+it carries an `adev:event` comment and signals 1–3 do not apply to it: `run`
+moved it to Question only because its split session ended without a split
+(`split-failed`), and the split the block asks for is still unapplied. It
+does not go to the bundler; it goes to Step 2's mid-development split, and in
+a pass a human starts it ends in Planned at most, never Todo. Every other
+card with an `adev:event` comment stays `run`'s.
+
+Cards that pass signals 1–3 go into the candidate list like any Backlog ticket — they
 are re-bundled and re-clarified the same way, and on `CLEAR` they move
-Question → Planned (Step 4). Cards that fail 2 or 3 are left exactly where
+Question → Planned (Step 4). Cards that fail 2 or 3 and carry no unapplied
+split block are left exactly where
 they are and are not mentioned in the report except by count ("<n> Question
 cards still waiting, <m> belong to run").
 
@@ -198,6 +258,14 @@ Question cards" — plus the `ignored` line and any `repaired` /
 `repair skipped` lines of Step 5 — and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
+
+**A ticket with an unapplied split block is not bundled.** Step 1 handed it
+over for a mid-development split — the only candidate of a split pass, or a
+Question card its split-block clause claimed. Leave it out of the bundler's
+candidate list, the lane script and the prose-lane check below, and apply
+*A ticket is split into a code ticket and a prose ticket* to it directly; it
+is a `single` package of lane `prose`. A split pass has no other candidate,
+so it dispatches no bundler at all.
 
 **Reconstruct `previous_cut` for a candidate returning from Question.** `list_hierarchy` for `package`; `get_ticket(project_id, ticket_id, include_relations=True)` for `depends_on`; the latest `## Frame (gatekeeper)` / `## Dependency (gatekeeper)` / `## Re-cut (gatekeeper)` comment (`list_comments(order="desc")`) for `reason` (the prior package kind: `collision`/`effort`/`single`) and `prior_rationale`.
 `prior_rationale` carries the prior pass's actual reasoning, distinct from the reason kind above — not just the kind — with `source` naming which comment it came from.
@@ -292,10 +360,12 @@ second-guess it.
 **A ticket an earlier pass already split keeps the lane that split gave
 it.** `list_comments(project_id, ticket_id, order="desc", limit=20, body_max_chars=600)`
 — a `## Lane split (gatekeeper)` comment's `gatekeeper:lane` block carries
-`lane:` for this ticket; take it instead of the verdict, and never split the
+`lane:` for this ticket: `code` after a path split (the block names the new
+ticket as `prose_ticket:`), `prose` after a mid-development split (it names
+it as `code_ticket:`). Take it instead of the verdict, and never split the
 same ticket twice. (Its body still describes both halves, so the bundler will
 report both again; the `Non-goal (re-cut to #<n>)` line is what took the
-prose half out.)
+other half out.)
 
 ### The prose lane is optional — check that this project has it
 
@@ -360,64 +430,111 @@ of the same decided lane stay together as one package of the original
 `depends_on` entries are kept and written through Step 3.5. Report it in
 Step 5 as `bundle rejected (spans lanes): #a, #b code · #c prose`.
 
-### A mixed ticket is split into a code ticket and a prose ticket
+### A ticket is split into a code ticket and a prose ticket
 
 One package is one branch, one PR, one event stream and one set of retry
-budgets, so a `mixed` ticket is never run as two processes on one ticket —
-it becomes two tickets with a dependency. Code first (a script with real
-behaviour tests), prose second (the skill that calls the merged script).
-For each ticket whose verdict is `lane: mixed` with `deliverables:` a
-number:
+budgets, so a ticket whose work spans both lanes is never run as two
+processes on one ticket — it becomes two tickets with a dependency. Code
+first (a script with real behaviour tests), prose second (the skill that
+calls the merged script). Two things trigger a split, and they run in
+opposite directions:
 
-1. **Label.** `list_labels(project_id)`, then
+- **Path split — before dispatch.** The classifier's verdict is
+  `lane: mixed` with `deliverables:` a number. The original keeps the code
+  half; the new ticket is the **prose half**.
+- **Mid-development split — after dispatch.** The ticket carries an
+  unapplied `triage:split v1` block (Step 1): the prose lane's tier selector
+  found requirements it may not build, `triage` copied them into the block,
+  and `run` posted it. The original keeps the prose half and its `lane:prose`
+  label; the new ticket is the **code half**. The lanes come from the block,
+  because the tier selector — a script — already decided them; this ticket
+  never reaches the bundler or `classify-lane.py`. Read the block's
+  `requirements:` and `paths:`, and the text those requirements carry in the
+  `blocked` event of the block's `attempt:` — fetch that one event comment in
+  full with `get_comment(project_id, comment_id=<its id>, ticket_id=<original>)`.
+
+Below, the *other half* is the half the new ticket carries: the prose half
+after a path split, the code half after a mid-development split. For each
+split, in this order:
+
+1. **Label.** Path split only: `list_labels(project_id)`, then
    `create_label(project_id, "lane:prose")` if absent — every label this
    skill applies is created in the catalog first, for the reason the
    agent-project-issues skill gives in "Labels: create the catalog entry
-   first".
-2. **Create the prose ticket.** No `custom_fields`, so it lands in Backlog.
+   first". A code half carries no label, so a mid-development split creates
+   none.
+2. **Create the other half.** No `custom_fields`, so it lands in Backlog.
    The body is exactly the two headings `templates/ISSUE_TEMPLATE/task.yml`
    requires:
 
    ```
-   create_ticket(project_id, title="<the original title> — prose half", labels=["lane:prose"], template="task", body="### Goal
-   The model-executed files of #<original>, changed as #<original> describes, once its code half has merged: <the deliverable paths the classifier listed as prose>
+   create_ticket(project_id, title="<the original title> — <prose | code> half", labels=<["lane:prose"] for a prose half, [] for a code half>, template="task", body="### Goal
+   <the Goal line for this direction, below>
 
    ### Acceptance
-   <the original ticket's acceptance lines that concern those files, verbatim; when none can be told apart: "The files above carry the change #<original> describes for them and refer to what #<original> merged.">
-   Evidence is the prose lane's own (blind tests, step replays) — never a string-presence test on these files.")
+   <the Acceptance lines for this direction, below>")
    ```
 
-3. **The original keeps the code half** — its lane is `code` from here on —
-   and the new ticket joins this pass as a `single` package of lane `prose`:
-   it is clarified in Step 3 like any other package, which is why the split
-   happens here and not after clarification.
-4. **Order.** Add the original's id to the new ticket's `deps`, so Step 3.5
-   writes `blocked_by` from the prose ticket to the code ticket and verifies
-   it with `relation-readback.py`.
+   - **Prose half.** Goal: "The model-executed files of #<original>, changed
+     as #<original> describes, once its code half has merged: <the
+     deliverable paths the classifier listed as prose>". Acceptance: the
+     original ticket's acceptance lines that concern those files, verbatim —
+     when none can be told apart, "The files above carry the change
+     #<original> describes for them and refer to what #<original> merged." —
+     then "Evidence is the prose lane's own (blind tests, step replays) —
+     never a string-presence test on these files."
+   - **Code half.** Goal: "The requirements <the block's `requirements:`> of
+     #<original>, which its prose lane may not build, built as #<original>
+     describes so that its prose half can use them: <the block's `paths:`,
+     or `paths not named` when it is empty>". Acceptance: the `blocked`
+     event's lines for those requirements, verbatim, then "Evidence is the
+     code lane's own: behaviour tests on the code."
+
+3. **Both halves are packages of this pass.** The new ticket joins as a
+   `single` package of its lane — `prose` after a path split, `code` after a
+   mid-development split — and is clarified in Step 3 like any other
+   package, which is why the split happens here and not after clarification.
+   The original's lane from here on is the half it kept: `code` after a path
+   split, `prose` after a mid-development split.
+4. **Order.** The prose ticket waits for the code ticket. Path split: add the
+   original's id to the new ticket's `deps`. Mid-development split: add the
+   new ticket's id to the original's `deps`. Step 3.5 then writes
+   `blocked_by` from the prose ticket to the code ticket and verifies it with
+   `relation-readback.py`.
 5. **Move the slice.** Emit a `recut` entry `{from: <original>, to: <new
-   ticket>, slice: <the prose paths and what the ticket asks of them>, why:
-   "model-executed prose runs in the prose lane, after the code it calls has
-   merged"}` for Step 3.7 — `## Frame (gatekeeper)` on both, the slice as an
-   additional requirement on the new ticket and a non-goal on the original,
-   no epic, no confirmation round.
+   ticket>, slice: <what moves>, why: <why>}` for Step 3.7 —
+   `## Frame (gatekeeper)` on both, the slice as an additional requirement on
+   the new ticket and a non-goal on the original, no epic, no confirmation
+   round. Path split: the slice is the prose paths and what the ticket asks of
+   them, `why: "model-executed prose runs in the prose lane, after the code it
+   calls has merged"`. Mid-development split: the slice is the block's
+   requirements and paths, `why: "the prose lane's tier selector found
+   requirements it may not build; they run in the code lane, before the
+   prose that uses them"`.
 6. **Record it**, once, on the original:
 
    ```
    add_comment(project_id, ticket_id=<original>, body="## Lane split (gatekeeper)
 
-   Code half: this ticket.
-   Prose half: #<new ticket> — blocked_by this ticket.
-   Paths: <every `path:` line of the classifier, verbatim>
+   Code half: <this ticket | #<new ticket>>.
+   Prose half: <#<new ticket> — blocked_by this ticket | this ticket — blocked_by #<new ticket>>.
+   Paths: <path split: every `path:` line of the classifier, verbatim | mid-development split: the block's `requirements:` and `paths:` lines, verbatim>
 
    <!-- gatekeeper:lane v1
-   lane: code
-   prose_ticket: #<new ticket>
+   lane: <code | prose>
+   <prose_ticket | code_ticket>: #<new ticket>
    -->
 
    Object by replying on this ticket.")
    ```
 
-   The block is read by the same dumb `key: value` reader as `adev:event`.
+   Each `<a | b>` takes its first value after a path split and its second
+   after a mid-development split: a path split records `lane: code` and
+   `prose_ticket:`, a mid-development split `lane: prose` and `code_ticket:`.
+   The block is read by the same dumb `key: value` reader as `adev:event`;
+   its `code_ticket:` line is what tells `run` the split landed, and what
+   stops `triage` and Step 1 from splitting the same ticket after dispatch a
+   second time.
 
 **`lane: mixed` with `deliverables: none`** is the one shape nobody can
 argue from the paths — both halves were reported as accompanying, so there
@@ -881,7 +998,7 @@ label and post a comment — exactly the same shape as
 the clarifier's read-only output into board state.
 
 ## Step 3.7 — apply a recut
-Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry of this pass. Step 2's lane split is the only source of one: its `from` is the ticket that was split and its `to` the prose ticket created there. The bundler emits none — a size judgement is never applied as a cut (Step 2, *An oversized pair is a Question, not a cut*) — so the absence of a confirmation round below describes only a split the architecture forces, two lanes needing two lower plugins.
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry of this pass. Step 2's lane split is the only source of one, in either direction: its `from` is the ticket that was split and its `to` the ticket created there — the prose half after a path split, the code half after a mid-development split, whose `why` names the prose lane's tier selector. The bundler emits none — a size judgement is never applied as a cut (Step 2, *An oversized pair is a Question, not a cut*) — so the absence of a confirmation round below describes only a split the architecture forces, two lanes needing two lower plugins.
 
 For each `recut` entry, on **both** endpoints, in this order:
 
@@ -915,6 +1032,11 @@ The closing sentence: when neither `ac:` nor `premise:` nor `unprovable_here:` f
 On the **source** (`from`) endpoint, this line renders:
 
 Non-goal (re-cut to #<to>): <slice>
+
+After a mid-development split this line is load-bearing: the original is
+dispatched to the prose lane again, and that lane's `context-extractor`
+reads this comment to leave the moved requirements out instead of hitting
+the same wall.
 
 2. Post a `## Re-cut (gatekeeper)` comment:
 
@@ -989,13 +1111,15 @@ exists. Then:
 update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>}, response="light")
 ```
 
-This is the same call whether the package came from Backlog or from your own
-answered Question card (Step 1) — Question → Planned is the one move out of
+This is the same call whether the package came from Backlog, from your own
+answered Question card (Step 1), or — the original of a mid-development
+split — from Doing or Question. Question → Planned is the one move out of
 Question a skill makes, and only for a card the gatekeeper itself put there
-and a human has since replied on. `run`'s Question cards are never moved or
+and a human has since replied on, or a card carrying an unapplied split
+block (Step 1). `run`'s other Question cards are never moved or
 commented on; Step 3.5's reverse-edge relation is the one write they receive.
 
-Then leave the release confirmation, always, once the move above has succeeded — the comment asserts a move that happened, so a failed move leaves nothing behind. Write `Question` in place of `Backlog` on the `Moved:` line for a card reclaimed from Question; the body has no other variable part:
+Then leave the release confirmation, always, once the move above has succeeded — the comment asserts a move that happened, so a failed move leaves nothing behind. Write the column the package left on the `Moved:` line in place of `Backlog`: `Question` for a card reclaimed from Question, `Doing` for the original of a split pass; the body has no other variable part:
 
 ```
 add_comment(project_id, ticket_id=<package>, body=…)
@@ -1017,6 +1141,36 @@ enumerates Todo only, so a child never gets dispatched on its own.
 
 A package carrying a `blocked_by` (or its GitLab `relates_to` fallback)
 relation moves to Planned like any other CLEAR package — see Step 3.5.
+
+## Step 4a — advance the split to Todo (split pass only)
+
+Runs only in a pass started with both `single_ticket=` and
+`advance_to_todo=true`. Every other pass skips this step and ends with its
+packages in Planned.
+
+The two tickets of this pass's mid-development split — the original and the
+code half — were released to Todo once already: a human moved the original
+there, and `run` dispatched it. This step carries that decision forward to
+the two tickets the scope now lives in. For each of the two that Step 4
+moved to Planned in this pass:
+
+```
+update_ticket(project_id, ticket_id=<it>, custom_fields={"Status": <native of Todo>}, response="light")
+```
+
+then, once that move has succeeded:
+
+```
+add_comment(project_id, ticket_id=<it>, body="## Advanced to Todo (gatekeeper)
+
+Moved: Planned → Todo, by the split session `run` started for #<original>.
+#<original> was moved to Todo by a human and dispatched; its prose lane found requirements it may not build, and they now live in #<code half>, which #<original> is blocked_by. `run` processes #<code half> first.")
+```
+
+A ticket Step 4 did not move to Planned — it went to Question, or an
+unexplained relation gap held it — stays where it is; the other one advances
+alone. `Todo` missing from Precondition 2's column map → advance nothing,
+leave both in Planned, and report `advance skipped: no Todo column`.
 
 ## Step 5 — report
 
@@ -1040,6 +1194,9 @@ closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 read-back failed twice; the withheld package is the second id, `#<pkg>`, not
 the dependent `#<d>` (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
+`mid-development split: #<original> (prose, blocked_by #<new>) → #<new> (code)`,
+`nothing to split: #<id>` (Step 1), `advanced to Todo: #<id>, #<id>` and
+`advance skipped: …` (Step 4a),
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
 `prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
 #<id>` and `prose lane not installed: #<id> still waiting` (Step 2);
@@ -1060,7 +1217,8 @@ comments/body` when it was not (Step 2).
 Flag any package at 4+ `## Clarification needed (gatekeeper)` comments as
 unusually hard to clarify (see Step 3). Then one line: "Move the packages you
 want processed tonight from Planned to Todo by hand, then start
-`/agent-ticket-orchestrator:run project_id=<id>`." — plus, if any package
+`/agent-ticket-orchestrator:run project_id=<id>`." (a split pass replaces it
+with its `advanced to Todo` line) — plus, if any package
 needs an answer, "Answer the open questions directly on their tickets — they
 are all in the Question column — then run
 `/agent-ticket-orchestrator:gatekeeper` again to pick them up."
@@ -1072,34 +1230,46 @@ are all in the Question column — then run
   the ticket, not asked in chat. Nothing here waits on a live reply.
 - **Never block on one package.** A package that needs a human answer goes
   to Question and you move straight to the next candidate — see Step 3.
-- **Never touch a Question card you did not put there.** The one exception
-  is Step 3.5's reverse edge: when a card with an `adev:event` comment waits
+- **Never touch a Question card you did not put there.** Two exceptions.
+  Step 3.5's reverse edge: when a card with an `adev:event` comment waits
   for a package of this pass, it receives that `blocked_by` relation (on
   GitLab, `relates_to` plus its one `## Dependency (gatekeeper)` comment) and
-  nothing else — no other comment, no label, no column move. Otherwise it
+  nothing else — no other comment, no label, no column move. And a card
+  carrying an unapplied split block: Step 1 claims it and Step 2 splits it,
+  into Planned at most in a pass a human starts. Otherwise it
   belongs to `run` and the human — see Step 1. Step 0's removal of a
   duplicate `status:*` label changes no card's column and is not a touch.
-- **Never move anything to Todo.** Planned is your terminal column. Todo is
-  written by humans only.
+- **Never move anything to Todo in a pass a human starts.** Planned is your
+  terminal column, and Todo is a human's release. The one pass that writes
+  Todo is the split session `run` starts with `single_ticket=` and
+  `advance_to_todo=true`: it moves only the two tickets of that one split,
+  in Step 4a, because a human already released their scope.
+  `advance_to_todo` without `single_ticket` stops before anything is
+  written.
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  the prose half of a lane split, `blocked_by`/`relates_to`
+  the other half of a lane split (either direction), `blocked_by`/`relates_to`
   relations, labels (including `regression-chain` and
   `lane:prose`), clarification comments,
   dependency comments, frame comments, regression-chain comments,
-  lane-split comments, release-confirmation comments, the removal of
+  lane-split comments, release-confirmation comments, advance-to-Todo
+  comments (Step 4a), the removal of
   duplicate `status:*` labels (Step 0), and the Backlog → Planned, Backlog → Question
-  and Question → Planned moves.
+  and Question → Planned moves — plus, for the original of a mid-development
+  split, its move out of Doing (to Planned or Question), and in a split pass
+  only, Planned → Todo for that split's two tickets.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body. The one close you make is Step
   0's `close: yes`, on a reopened ticket whose work has since merged.
-- **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the prose half of a lane split and an epic (both Step 2).
+- **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the other half of a lane split (either direction) and an epic (both Step 2).
 - **You never apply a size-driven cut.** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); the only `recut` you apply is the lane split's.
 - **Bundle before clarify**, always.
-- **The lane comes from `scripts/gatekeeper/classify-lane.py`, never from a
-  model.** One package, one lane; a `mixed` ticket is split, a bundle that
-  spans lanes is rejected, and a ticket is split at most once (Step 2).
+- **The lane comes from a script, never from a model** —
+  `scripts/gatekeeper/classify-lane.py`, or, for a mid-development split, the
+  prose lane's own tier selector, carried in the `triage:split v1` block.
+  One package, one lane; a `mixed` ticket is split, a bundle that spans
+  lanes is rejected, and a ticket is split at most once (Step 2).
 - **No prose routing without the prose lane.** Whether
   `agent-autonomous-prompt-engineer` is installed comes from
   `scripts/gatekeeper/prose-lane-available.py`; when it is not, a `prose` or
