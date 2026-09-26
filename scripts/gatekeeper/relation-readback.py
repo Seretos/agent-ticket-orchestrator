@@ -22,10 +22,9 @@ Usage: no arguments. Reads one JSON object from stdin:
 `get_ticket(..., include_relations=True)` (Step 3.5). Only a relation whose
 `kind` is `blocked_by` or `relates_to` counts toward satisfying an expected
 target -- any other kind, even pointed at the same target, is not the
-dependency edge Step 3.5 wrote and must not silently close the gap (a plan
-review flagged this: GitLab's `relates_to` is this project's real, portable
-stand-in for `blocked_by`, not a licence to accept an arbitrary relation
-kind).
+dependency edge Step 3.5 wrote and must not silently close the gap (which
+trackers support which relation kind is documented in the agent-project-issues
+skill, "Relations: direction matters").
 
 `reasons` maps a target id to exactly one of the three words Step 3.5
 already records when it chose not to write a relation: `not found`,

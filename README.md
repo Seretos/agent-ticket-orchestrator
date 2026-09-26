@@ -20,7 +20,7 @@ Comments are the log, columns are the signal. An empty Question column means no 
 
 ## Board model
 
-The project's `~/.seretos/projects.yml` must bind a board with the logical columns `Backlog`, `Planned`, `Todo`, `Doing`, `Done`, `Question` (native names are resolved live via `list_board_columns`; e.g. the native column may be called "Frage offen"). Required permissions: `issues.create/modify`, `pulls.create/modify/merge` (`run` requires `merge` and STOPs before touching anything without it; use `/agent-autonomous-developer:process-developer` for single tickets instead), and `board.manage` once for creating missing columns with `ensure_board_column`.
+The project's `~/.seretos/projects.yml` must bind a board with the logical columns `Backlog`, `Planned`, `Todo`, `Doing`, `Done`, `Question` (how logical names map to the live board: see the agent-project-issues skill, "Board columns: resolve, then write"). Required permissions: `issues.create/modify`, `pulls.create/modify/merge` (`run` requires `merge` and STOPs before touching anything without it; use `/agent-autonomous-developer:process-developer` for single tickets instead), and `board.manage` once for creating missing columns with `ensure_board_column`.
 
 ## Labels
 
@@ -48,10 +48,7 @@ To make a project's own hand-filed tickets follow this same frame shape:
    required section (per the heading vocabulary `agents/clarifier.md`
    documents) is missing.
 
-Ensure the `bug` and `epic` labels exist in the target project before adopting
-`bug.yml`/`epic.yml` (create them via the project-issues MCP's `create_label`
-or the GitHub UI) — the form's default label is not created automatically,
-and GitHub 404s on an unknown label at ticket-creation time.
+Ensure the `bug` and `epic` labels exist in the target project before adopting `bug.yml`/`epic.yml` — see the agent-project-issues skill, "Labels: create the catalog entry first".
 
 ## Install
 
