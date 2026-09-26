@@ -47,7 +47,8 @@ REASONS = [
     "merge-conflict",
     "rebase-decision",
 ]
-KNOWN_KEYS = {"event", "package", "reason", "pr", "merge_sha"}
+KNOWN_KEYS = {"event", "package", "reason", "pr", "merge_sha",
+              "cost_usd", "duration_ms", "turns"}
 
 
 def read_block(text):
@@ -229,6 +230,9 @@ def test_block_independent_of_wording(event, wrap_id):
         "reason": expected.get("reason", ""),
         "pr": expected.get("pr", ""),
         "merge_sha": expected.get("merge_sha", ""),
+        "cost_usd": expected.get("cost_usd", ""),
+        "duration_ms": expected.get("duration_ms", ""),
+        "turns": expected.get("turns", ""),
     }
 
 
@@ -256,7 +260,8 @@ def test_parse_empty_value_is_empty_string():
     assert result.returncode == 0, result.stdout + result.stderr
     parsed = json.loads(result.stdout)
     assert parsed == {"event": "merged", "package": "63", "reason": "",
-                       "pr": "", "merge_sha": ""}
+                       "pr": "", "merge_sha": "", "cost_usd": "",
+                       "duration_ms": "", "turns": ""}
 
 
 def test_parse_first_of_two_blocks_wins():
@@ -324,6 +329,135 @@ def test_parse_rejects(text, desc, needle):
     """Requirement R3: the same validation applies on the `parse` side, once
     a block is actually found. Same case-specific-content strengthening as
     `test_render_rejects`."""
+    result = run_parse(text)
+    assert result.returncode == 1, f"{desc}: stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert result.stdout == "", f"{desc}: expected empty stdout, got {result.stdout!r}"
+    stderr_lower = result.stderr.lower()
+    assert "error:" in stderr_lower, f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    assert needle in stderr_lower, \
+        f"{desc}: expected {needle!r} named in stderr; stderr={result.stderr!r}"
+
+
+# --- R2 (#65): render/parse the session cost/duration/turns fields ---------
+#
+# `--cost-usd`/`--duration-ms`/`--turns` extend the existing five-key block to
+# eight, so a package session's cost, wall-clock duration and turn count can
+# leave the ticket comment the same way `pr`/`merge_sha` already do. See
+# .adev/65-1/plan.md, R2.
+
+
+def _make_block_with_session_values(cost_usd="", duration_ms="", turns="",
+                                     event="merged", package="65", reason="",
+                                     pr="", merge_sha=""):
+    """Hand-built 8-key block text, for parse-side tests that need an invalid
+    combination `render` would itself refuse to produce. Deliberately not
+    built from `make_block`, which only knows the original five keys."""
+    return (
+        "<!-- ato:event v1\n"
+        f"event: {event}\n"
+        f"package: {package}\n"
+        f"reason: {reason}\n"
+        f"pr: {pr}\n"
+        f"merge_sha: {merge_sha}\n"
+        f"cost_usd: {cost_usd}\n"
+        f"duration_ms: {duration_ms}\n"
+        f"turns: {turns}\n"
+        "-->\n"
+    )
+
+
+def test_render_and_parse_session_values():
+    """Requirement R2: `render --cost-usd 0.4213 --duration-ms 183422 --turns
+    17` emits a block with those three key lines; `parse` returns them in its
+    JSON. Real subprocess invocation, no mocking."""
+    result = run_render("--event", "merged", "--package", "65",
+                         "--cost-usd", "0.4213", "--duration-ms", "183422",
+                         "--turns", "17")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "cost_usd: 0.4213" in result.stdout, result.stdout
+    assert "duration_ms: 183422" in result.stdout, result.stdout
+    assert "turns: 17" in result.stdout, result.stdout
+
+    parsed_result = run_parse(result.stdout)
+    assert parsed_result.returncode == 0, parsed_result.stdout + parsed_result.stderr
+    parsed = json.loads(parsed_result.stdout)
+    assert parsed["cost_usd"] == "0.4213"
+    assert parsed["duration_ms"] == "183422"
+    assert parsed["turns"] == "17"
+
+
+def test_render_accepts_scientific_notation_cost():
+    """Additional coverage: `1.2e-05` is a valid `--cost-usd` value."""
+    result = run_render("--event", "merged", "--package", "65",
+                         "--cost-usd", "1.2e-05")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "cost_usd: 1.2e-05" in result.stdout, result.stdout
+
+
+def test_omitted_session_values_render_as_empty_key_lines():
+    """Additional coverage: omitted --cost-usd/--duration-ms/--turns render as
+    empty key lines, not dropped -- same convention as `pr`/`merge_sha`."""
+    result = run_render("--event", "merged", "--package", "65")
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert "cost_usd: " in lines, f"cost_usd key line missing/non-empty: {result.stdout!r}"
+    assert "duration_ms: " in lines, f"duration_ms key line missing/non-empty: {result.stdout!r}"
+    assert "turns: " in lines, f"turns key line missing/non-empty: {result.stdout!r}"
+
+
+def test_parse_legacy_five_key_block_has_empty_session_values():
+    """Additional coverage: a v1 block written before #65 (only the original
+    five keys) still parses -- the missing cost_usd/duration_ms/turns keys
+    read back as "", not absent from the JSON."""
+    text = make_block(event="merged", package="63")
+    result = run_parse(text)
+    assert result.returncode == 0, result.stdout + result.stderr
+    parsed = json.loads(result.stdout)
+    assert "cost_usd" in parsed, parsed
+    assert "duration_ms" in parsed, parsed
+    assert "turns" in parsed, parsed
+    assert parsed["cost_usd"] == ""
+    assert parsed["duration_ms"] == ""
+    assert parsed["turns"] == ""
+
+
+SESSION_VALUE_RENDER_REJECTIONS = [
+    (["--cost-usd", "abc"], "invalid cost_usd", "cost_usd"),
+    (["--turns", "1.5"], "invalid turns", "turns"),
+    (["--duration-ms", "-5"], "invalid duration_ms", "duration_ms"),
+    (["--turns", "1-->"], "invalid turns", "turns"),
+]
+
+
+@pytest.mark.parametrize("extra_args,desc,needle", SESSION_VALUE_RENDER_REJECTIONS,
+                         ids=[desc for _, desc, _ in SESSION_VALUE_RENDER_REJECTIONS])
+def test_render_rejects_invalid_session_values(extra_args, desc, needle):
+    """Requirement R2: a non-numeric cost_usd, a non-integer or negative
+    duration_ms/turns, or a value carrying the close-comment marker -> exit 1
+    naming the offending field, same rejection shape as R3's existing
+    fields."""
+    result = run_render("--event", "merged", "--package", "65", *extra_args)
+    assert result.returncode == 1, f"{desc}: stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert result.stdout == "", f"{desc}: expected empty stdout, got {result.stdout!r}"
+    stderr_lower = result.stderr.lower()
+    assert "error:" in stderr_lower, f"{desc}: missing 'error:' on stderr; stderr={result.stderr!r}"
+    assert needle in stderr_lower, \
+        f"{desc}: expected {needle!r} named in stderr; stderr={result.stderr!r}"
+
+
+SESSION_VALUE_PARSE_REJECTIONS = [
+    (_make_block_with_session_values(cost_usd="abc"), "invalid cost_usd", "cost_usd"),
+    (_make_block_with_session_values(turns="1.5"), "invalid turns", "turns"),
+    (_make_block_with_session_values(duration_ms="-5"), "invalid duration_ms", "duration_ms"),
+    (_make_block_with_session_values(turns="1-->"), "invalid turns", "turns"),
+]
+
+
+@pytest.mark.parametrize("text,desc,needle", SESSION_VALUE_PARSE_REJECTIONS,
+                         ids=[desc for _, desc, _ in SESSION_VALUE_PARSE_REJECTIONS])
+def test_parse_rejects_invalid_session_values(text, desc, needle):
+    """Requirement R2: the same validation applies on the `parse` side, once
+    a hand-built block carries an invalid session value."""
     result = run_parse(text)
     assert result.returncode == 1, f"{desc}: stdout={result.stdout!r} stderr={result.stderr!r}"
     assert result.stdout == "", f"{desc}: expected empty stdout, got {result.stdout!r}"

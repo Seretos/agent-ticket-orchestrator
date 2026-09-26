@@ -16,10 +16,12 @@ Usage
 
     ato-event.py render --event <e> --package <id> [--reason <r>]
                          [--pr <n>] [--merge-sha <s>]
+                         [--cost-usd <v>] [--duration-ms <v>] [--turns <v>]
 
-Prints the block to stdout, exactly, with all five keys in fixed order
-(`event`, `package`, `reason`, `pr`, `merge_sha`) always emitted -- an
-omitted `--reason`/`--pr`/`--merge-sha` renders as an empty value, never a
+Prints the block to stdout, exactly, with all eight keys in fixed order
+(`event`, `package`, `reason`, `pr`, `merge_sha`, `cost_usd`, `duration_ms`,
+`turns`) always emitted -- an omitted `--reason`/`--pr`/`--merge-sha`/
+`--cost-usd`/`--duration-ms`/`--turns` renders as an empty value, never a
 dropped key -- and exits 0. Rejects invalid input: exit 1, `error: <what>`
 on stderr naming the offending value, empty stdout. Argparse's own usage
 errors (missing `--event`/`--package`, unknown flag) stay exit 2.
@@ -30,9 +32,13 @@ Reads stdin (any text -- a whole ticket comment, prose and all), finds the
 first `<!-- ato:event v1 -->` block via a dumb `key: value` reader (split on
 first `:`, strip whitespace including a trailing `\\r` from CRLF input,
 unknown keys ignored, first block wins), applies the same validation, and
-prints JSON `{"event", "package", "reason", "pr", "merge_sha"}` (exit 0). No
-block found, or the found block fails validation: exit 1, `error: <what>` on
-stderr, empty stdout.
+prints JSON `{"event", "package", "reason", "pr", "merge_sha", "cost_usd",
+"duration_ms", "turns"}` (exit 0). No block found, or the found block fails
+validation: exit 1, `error: <what>` on stderr, empty stdout. A block written
+before #65 (only the original five keys) still parses -- the three new keys
+read back as `""`, the same "unknown keys ignored" reader applied in
+reverse: keys the block does not carry default to empty rather than being
+absent from the JSON.
 
 Vocabulary
 ----------
@@ -55,10 +61,20 @@ not read SKILL.md):
 `pr`, `merge_sha` and `package` are free strings, but must not contain a
 newline or the literal `-->` -- either would split or prematurely close the
 rendered block.
+
+`cost_usd`, `duration_ms` and `turns` are the package session's
+`total_cost_usd`/`duration_ms`/`num_turns`, reported by
+`start-package-session.sh` (#65) so a statistics reader can sum them without
+matching free text. `cost_usd` must be empty or a non-negative number
+(plain or scientific notation, e.g. `0.4213`, `1.2e-05`); `duration_ms`/
+`turns` must be empty or a non-negative integer. A non-numeric value is
+rejected the same way as an unsafe marker in the other fields -- the numeric
+check subsumes it, since no valid number can contain a newline or `-->`.
 """
 
 import argparse
 import json
+import re
 import sys
 
 EVENTS = ("escalated", "triage-answered", "merged")
@@ -74,7 +90,8 @@ REASONS = (
 )
 
 # Fixed order the block is always rendered (and read) in.
-KEYS = ("event", "package", "reason", "pr", "merge_sha")
+KEYS = ("event", "package", "reason", "pr", "merge_sha",
+        "cost_usd", "duration_ms", "turns")
 
 BLOCK_OPEN = "<!-- ato:event v1"
 BLOCK_CLOSE = "-->"
@@ -82,12 +99,17 @@ BLOCK_CLOSE = "-->"
 # Values that would split or prematurely close the block if embedded raw.
 _UNSAFE_MARKERS = ("\n", "\r", BLOCK_CLOSE)
 
+# Non-negative number, plain or scientific notation (e.g. "0.4213", "1.2e-05").
+_COST_RE = re.compile(r"^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$")
+# Non-negative integer.
+_NONNEG_INT_RE = re.compile(r"^[0-9]+$")
+
 
 def _contains_unsafe_marker(value):
     return any(marker in value for marker in _UNSAFE_MARKERS)
 
 
-def validate(event, package, reason, pr, merge_sha):
+def validate(event, package, reason, pr, merge_sha, cost_usd, duration_ms, turns):
     """Return an `error: ...` message (already forbidding embedded markers,
     naming the offending field/value) if the fields are invalid, else None."""
     if event not in EVENTS:
@@ -109,14 +131,28 @@ def validate(event, package, reason, pr, merge_sha):
     elif event == "escalated":
         return "error: escalated without reason: --reason is required for event 'escalated'"
 
+    if cost_usd and not _COST_RE.match(cost_usd):
+        return (
+            f"error: invalid cost_usd: must be empty or a non-negative number "
+            f"(plain or scientific notation): {cost_usd!r}"
+        )
+
+    for name, value in (("duration_ms", duration_ms), ("turns", turns)):
+        if value and not _NONNEG_INT_RE.match(value):
+            return (
+                f"error: invalid {name}: must be empty or a non-negative integer: "
+                f"{value!r}"
+            )
+
     return None
 
 
-def render_block(event, package, reason, pr, merge_sha):
-    """Build the block text, fixed key order, all five keys always present."""
+def render_block(event, package, reason, pr, merge_sha, cost_usd, duration_ms, turns):
+    """Build the block text, fixed key order, all eight keys always present."""
     lines = [BLOCK_OPEN]
     values = {"event": event, "package": package, "reason": reason,
-              "pr": pr, "merge_sha": merge_sha}
+              "pr": pr, "merge_sha": merge_sha, "cost_usd": cost_usd,
+              "duration_ms": duration_ms, "turns": turns}
     for key in KEYS:
         lines.append(f"{key}: {values[key]}")
     lines.append(BLOCK_CLOSE)
@@ -169,6 +205,9 @@ def build_parser():
     render_p.add_argument("--reason", default="")
     render_p.add_argument("--pr", default="")
     render_p.add_argument("--merge-sha", dest="merge_sha", default="")
+    render_p.add_argument("--cost-usd", dest="cost_usd", default="")
+    render_p.add_argument("--duration-ms", dest="duration_ms", default="")
+    render_p.add_argument("--turns", dest="turns", default="")
 
     sub.add_parser("parse", help="read stdin, print the first block as JSON")
 
@@ -176,12 +215,14 @@ def build_parser():
 
 
 def cmd_render(args):
-    error = validate(args.event, args.package, args.reason, args.pr, args.merge_sha)
+    error = validate(args.event, args.package, args.reason, args.pr, args.merge_sha,
+                      args.cost_usd, args.duration_ms, args.turns)
     if error:
         print(error, file=sys.stderr)
         return 1
     sys.stdout.write(render_block(args.event, args.package, args.reason,
-                                   args.pr, args.merge_sha))
+                                   args.pr, args.merge_sha, args.cost_usd,
+                                   args.duration_ms, args.turns))
     return 0
 
 
@@ -198,8 +239,11 @@ def cmd_parse():
     reason = parsed.get("reason", "")
     pr = parsed.get("pr", "")
     merge_sha = parsed.get("merge_sha", "")
+    cost_usd = parsed.get("cost_usd", "")
+    duration_ms = parsed.get("duration_ms", "")
+    turns = parsed.get("turns", "")
 
-    error = validate(event, package, reason, pr, merge_sha)
+    error = validate(event, package, reason, pr, merge_sha, cost_usd, duration_ms, turns)
     if error:
         print(error, file=sys.stderr)
         return 1
@@ -210,6 +254,9 @@ def cmd_parse():
         "reason": reason,
         "pr": pr,
         "merge_sha": merge_sha,
+        "cost_usd": cost_usd,
+        "duration_ms": duration_ms,
+        "turns": turns,
     }))
     return 0
 
