@@ -483,8 +483,48 @@ written in Step 3.5 together with the clarifier's.
 
 ## Step 3 — clarify each package
 
-For each package, in order, dispatch the `clarifier` unnamed, synchronous,
-fresh:
+**Dispatch the `clarifier` in waves.** A clarifier only reads, so the calls
+of packages that do not depend on each other go out together; everything
+that writes stays one package at a time.
+
+1. **Clarify set.** Every package ticket from Step 2, in the bundler's order,
+   except the ones Step 2 already moved to Question (both cards of an
+   oversized pair, a ticket held for the missing prose lane, a `mixed`
+   ticket with `deliverables: none`).
+2. **Same-pass edge.** A package waits for another when one of the bundler's
+   `depends_on` targets for it, lifted through the Step 2 package map, is
+   another package of the clarify set. A target that lifts to the package
+   itself, or to a ticket outside the clarify set, is not an edge and never
+   holds a dispatch back (Step 3.5 still writes it).
+3. **Waves.** Wave 1 is every package with no same-pass edge. Each later wave
+   is the packages whose same-pass blockers were all in earlier waves. The
+   bundler's order decides nothing else: a package listed first still waits
+   for its blocker. A wave holds at most **4** packages; the ones beyond 4
+   move to the next wave, in bundler order. The cap exists because each
+   clarifier can make up to two `list_tickets` searches and GitHub's Search
+   API allows 30 requests a minute; whether a wave's concurrent reads stay
+   under the provider's secondary rate limits is **unverified**. The cap
+   bounds that risk, it does not remove it — keeping the writes sequential
+   removes only the write-side risk.
+4. **One wave is one assistant message** carrying one `Agent` call per
+   package in it — the call below. No `run_in_background`: these are
+   ordinary synchronous calls, and the turn waits until every one of them
+   has returned.
+5. **Handle the results one at a time**, in the main turn, in dispatch order.
+   For one package: parse its frame block, then Step 3.5, Step 3.6, Step 3.7,
+   then its status (the `NEEDS_INPUT` post and the move to Question, or
+   Step 4) — all against that package's own clarifier result. Finish that
+   package before you start on the next result. Never issue two packages'
+   writes in one message.
+6. **Dispatch the next wave only after every package of this wave is fully
+   handled.** A dependent's clarifier then reads its blocker's frame comment
+   and column as this pass left them. The package map is already complete
+   from Step 2, so lifting never waits for a wave.
+7. **Cycle.** When packages remain and none of them can be dispatched —
+   their same-pass edges form a cycle — send the rest one per wave, in
+   bundler order, and report `clarify order cycle: #a, #b` in Step 5.
+
+The call, one per package in the wave:
 
 ```
 Agent(
@@ -502,7 +542,7 @@ protocol already reads `list_comments` and treats an earlier
 so a human's reply left on the ticket between gatekeeper runs is picked up
 without you doing anything special here.
 
-It ends with a status line:
+Each result ends with a status line:
 
 - `STATUS: CLEAR` → go to Step 4.
 - `STATUS: NEEDS_INPUT` → it carries a `## Open Questions` section
@@ -523,7 +563,7 @@ It ends with a status line:
   update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Question>}, response="light")
   ```
 
-  and move on to the **next** package immediately — do not wait here. Record
+  and move on to the next result immediately — do not wait here. Record
   it in Step 5's report as "needs answer — see ticket #<id>". Only the
   package ticket moves; an epic's children stay in Backlog, as in Step 4.
 
@@ -591,7 +631,8 @@ pass for a malformed block.
 
 ## Step 3.5 — link dependencies
 
-Runs per package, immediately after its clarifier call returns, **on both
+Runs per package, in the main turn, first thing once that package's result
+is handled (Step 3's waves), **on both
 statuses** (CLEAR and NEEDS_INPUT) — a dependency is a fact, not a decision,
 and a package that goes to Question does not make it false.
 
@@ -873,6 +914,7 @@ this` for every chained package; `Planned but blocked: #<pkg> waits on #<b>,
 which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
+`clarify order cycle: #a, #b` (Step 3);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
 2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
@@ -945,7 +987,9 @@ are all in the Question column — then run
 - **The `regression-chain` label and its comment are written once.** Check
   for the existing comment and label before posting (Step 3.6).
 - **Subagents are unnamed and synchronous.** No `name`, no `SendMessage`, no
-  `run_in_background`. Re-dispatch fresh instead of resuming; the `clarifier`
+  `run_in_background`. Several `clarifier` calls in one message (Step 3's
+  waves) are still synchronous calls; the turn waits for all of them.
+  Re-dispatch fresh instead of resuming; the `clarifier`
   reads its own answers back from the ticket, so nothing needs to be inlined
   by hand on a repeat pass.
 - **Project id is a parameter.** Never infer it from cwd.
