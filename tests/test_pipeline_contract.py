@@ -387,6 +387,22 @@ def test_assert_blocker_resolved_by_closed_rejects_missing_heading():
         _assert_blocker_resolved_by_closed(bad_text)
 
 
+def test_assert_blocker_resolved_by_closed_rejects_missing_closes_reference():
+    """(#56 R7b, test-critic round 2 F1) Text with the right heading and the
+    word `closed` but no `Closes #<n>` reference at all states a resolution
+    rule that never requires the PR-linking convention -- a helper that
+    omits the `Closes #<n>` assertion would pass this batch silently, so
+    this case must fail on its own."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved once it is `status: closed`,\n"
+        "regardless of how it came to be closed.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
 def test_run_orders_topologically_with_board_order_tiebreak():
     text = _read(RUN)
     section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
