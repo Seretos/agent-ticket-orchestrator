@@ -144,8 +144,8 @@ label one heading level deeper than a hand-written `##`.
    validates and writes the relation; you only report what you saw and what
    shows it.
 
-   **The reverse direction is its own key.** Another ticket can need what
-   *this* package introduces: its own body or comments say it waits for this
+   **1b (reverse). Record what waits for this package — its own key.**
+   Another ticket can need what *this* package introduces: its own body or comments say it waits for this
    package, or name this package as its enabler. That ticket must not run
    before this package merges. Report it as `needed_by:` (Output format),
    never in `depends_on:` — `depends_on` lists what this package waits for,

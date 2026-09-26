@@ -711,10 +711,12 @@ for each raw dependent #d:
   1. Lift #d exactly as step 1 above (package map, then list_hierarchy,
      at most 3 hops, topmost) -> dependent
   2. dependent == this package -> record "reverse dependency absorbed",
-     write nothing.
+     write nothing, skip steps 3-5, next #d.
      get_ticket(project_id, dependent):
-     - not found     -> record "#d not found", write nothing
-     - status closed -> record "#d closed", write nothing
+     - not found     -> record "#d not found", write nothing,
+                        skip steps 3-5, next #d
+     - status closed -> record "#d closed", write nothing,
+                        skip steps 3-5, next #d
   3. Write, from the DEPENDENT side:
      - "blocked_by" in provider_support[<provider>] (github, azuredevops):
          add_relation(project_id, ticket_id=<dependent>,
@@ -977,8 +979,9 @@ closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
 `reverse dependency: #<d> blocked_by #<pkg> (written | already present |
 #<d> closed | not found | absorbed)` for every `needed_by` entry, and
-`unexplained relation gap: #<d> — #<pkg>` for a reverse edge whose read-back
-failed twice, which withheld `#<pkg>` from Planned (Step 3.5);
+`unexplained relation gap (reverse): #<d> — #<pkg>` for a reverse edge whose
+read-back failed twice; the withheld package is the second id, `#<pkg>`, not
+the dependent `#<d>` (Step 3.5);
 `lane split: #<original> (code) → #<new> (prose, blocked_by #<original>)`,
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
 `prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
