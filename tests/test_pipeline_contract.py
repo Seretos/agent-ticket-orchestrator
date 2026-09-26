@@ -357,6 +357,36 @@ def test_run_defines_resolved_as_closed():
     _assert_blocker_resolved_by_closed(_read(RUN))
 
 
+def test_assert_blocker_resolved_by_closed_rejects_text_missing_closed():
+    """(#56 R7b, test-critic F1) The helper must actually be able to reject,
+    not just accept -- a section with the right heading and a `Closes #<n>`
+    reference but never the word `closed` states a different resolution rule
+    and must fail, proving the helper is not `pass`-shaped."""
+    bad_text = (
+        "### When is a blocker resolved\n\n"
+        "A blocker `#b` counts as resolved once `run` itself decides it no\n"
+        "longer matters, regardless of its board state. See Closes #<n> for\n"
+        "the unrelated PR-linking convention.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
+def test_assert_blocker_resolved_by_closed_rejects_missing_heading():
+    """(#56 R7b, test-critic F1) Text that never states the required heading
+    at all -- even though 'closed' and 'Closes #<n>' both appear somewhere --
+    must be rejected, since the heading is what scopes the rule to the right
+    section."""
+    bad_text = (
+        "### Some unrelated heading\n\n"
+        "This ticket is closed. Closes #<n>.\n\n"
+        "### 2. Per package, sequentially\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_blocker_resolved_by_closed(bad_text)
+
+
 def test_run_orders_topologically_with_board_order_tiebreak():
     text = _read(RUN)
     section = _slice(text, "### 1a. Order Todo by dependency", "### When is a blocker resolved")
@@ -2764,6 +2794,49 @@ _POST_45_COLUMNS_FIXTURE = (
 
 def test_run_required_columns_drop_review():
     _assert_run_required_columns(_read(RUN))
+
+
+_BAD_COLUMNS_FIXTURE_MISSING_TODO = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Doing`, `Question`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+_BAD_COLUMNS_FIXTURE_EXTRA_COLUMN = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Todo`, `Doing`, `Question`, `Blocked`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+def test_assert_run_required_columns_rejects_missing_todo():
+    """(#56 R7a, test-critic F2) The helper must actually be able to reject a
+    columns list that dropped a required column, not merely re-confirm a
+    fixture the test itself wrote to already satisfy the rule."""
+    with pytest.raises(AssertionError):
+        _assert_run_required_columns(_BAD_COLUMNS_FIXTURE_MISSING_TODO)
+
+
+def test_assert_run_required_columns_rejects_unexpected_extra_column():
+    """(#56 R7a, test-critic F2) 'rejects anything else' includes an
+    unexpected extra column such as `Blocked` sitting alongside the required
+    three -- a filter that merely keeps the known columns and drops the rest
+    would wrongly accept this."""
+    with pytest.raises(AssertionError):
+        _assert_run_required_columns(_BAD_COLUMNS_FIXTURE_EXTRA_COLUMN)
 
 
 @pytest.mark.parametrize("kind", ["columns", "blocker"])

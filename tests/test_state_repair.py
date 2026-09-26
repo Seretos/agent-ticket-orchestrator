@@ -124,9 +124,14 @@ def test_duplicate_status_labels_keep_furthest_column():
 
 
 def test_duplicate_status_labels_three_way_keeps_the_furthest_removes_the_rest():
+    """Input order (doing, todo, question, bug) deliberately differs from the
+    labels' column-rank order (todo=2, doing=3, question=5 in BOARD_COLUMNS),
+    so the `remove:` lines below can only be explained by preserving *input*
+    order -- an implementation that instead sorted removals by ascending
+    column rank would emit `status:todo` before `status:doing`."""
     result = run_repair({
         "columns": BOARD_COLUMNS,
-        "labels": ["status:todo", "status:doing", "status:question", "bug"],
+        "labels": ["status:doing", "status:todo", "status:question", "bug"],
         "state": "open",
         "reopened_at": None,
         "latest_event": None,
@@ -135,8 +140,8 @@ def test_duplicate_status_labels_three_way_keeps_the_furthest_removes_the_rest()
     assert result.stdout.splitlines() == [
         "verdict: repair",
         "keep: status:question",
-        "remove: status:todo",
         "remove: status:doing",
+        "remove: status:todo",
     ], f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert result.returncode == 2, result.stderr
 
@@ -231,6 +236,25 @@ def test_stale_merge_with_unrelated_later_ci_green_does_not_close():
     ))
     assert result.stdout.splitlines() == ["verdict: ok"], (
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_latest_event_pr_mismatched_from_merged_pr_does_not_close():
+    """Isolates the PR-identity tie: ci-green fires strictly after the
+    reopen, and *some* PR merges at/after the reopen too -- every other
+    close condition holds -- but that merged PR's number (99) does not match
+    the ci-green event's own `pr` field (42, from the base payload). Only a
+    check that latest_event.pr == pr.number can be what keeps this at `ok`;
+    an implementation that merely checks latest_event.pr is non-null would
+    wrongly close."""
+    result = run_repair(_reopen_payload(
+        pr={"number": 99, "merged": True, "merged_at": "2026-09-02T00:00:00Z"},
+    ))
+    assert result.stdout.splitlines() == ["verdict: ok"], (
+        f"latest_event.pr=42 does not match the merged pr.number=99, so this "
+        f"must not close even though the merge itself lands after the "
+        f"reopen: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert result.returncode == 0, result.stderr
 
