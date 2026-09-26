@@ -14,6 +14,7 @@ at its well-known absolute path, never a bare `bash` (which can resolve to
 the WSL stub).
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -23,6 +24,7 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 START_SCRIPT = REPO_ROOT / "scripts" / "start-package-session.sh"
+ATO_EVENT_SCRIPT = REPO_ROOT / "scripts" / "run" / "ato-event.py"
 
 if sys.platform == "win32":
     _BASH_PATH = pathlib.Path(r"C:\Program Files\Git\bin\bash.exe")
@@ -44,7 +46,11 @@ else
   echo missing > "$FAKE_CLAUDE_LOCK"
 fi
 touch .claude-started-here
-echo '{"type":"system","subtype":"init"}'
+if [ -n "${FAKE_CLAUDE_STREAM:-}" ]; then
+  cat "$FAKE_CLAUDE_STREAM"
+else
+  echo '{"type":"system","subtype":"init"}'
+fi
 exit "${FAKE_CLAUDE_EXIT:-0}"
 """
 
@@ -184,6 +190,167 @@ def test_run_directory_exit_marker_and_lock_are_unchanged_by_the_lane(sandbox):
     assert (rundirs[0] / "exit_code").read_text().strip() == "7"
     assert '"type":"system"' in (rundirs[0] / "stream.jsonl").read_text()
     assert not (sandbox["home"] / ".claude" / ".launch-lock").exists(), "the lock is released after the start"
+
+
+# --- session cost/duration/turns reporting (#65) -----------------------------------
+#
+# The session's final `"type":"result"` record in stream.jsonl carries
+# `total_cost_usd`/`duration_ms`/`num_turns`; the script must report them on
+# stdout as `COST_USD=`/`DURATION_MS=`/`TURNS=`, between `RUNDIR=` (first) and
+# `EXIT=` (still last). `FAKE_CLAUDE_STREAM`, if set, points the stand-in
+# `claude` at a fixture file it cats to stdout instead of the fixed one-line
+# system record, so these tests can supply a stream shaped like a real
+# session's. See .adev/65-1/plan.md, R1/R3.
+
+SYSTEM_RECORD = {"type": "system", "subtype": "init"}
+
+# An assistant message whose text contains the same key name, escaped as it
+# would be inside a JSON string, not as a real `"type":"result"` field. A
+# naive extraction that scans the whole stream for `"total_cost_usd":<n>`
+# rather than scoping to the last result record would wrongly pick this up.
+DECOY_ASSISTANT_RECORD = {
+    "type": "assistant",
+    "message": {
+        "content": [
+            {"type": "text", "text": 'decoy "total_cost_usd":99 must not be read'}
+        ]
+    },
+}
+
+RESULT_RECORD = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "duration_ms": 183422,
+    "duration_api_ms": 170001,
+    "num_turns": 17,
+    "result": "...",
+    "session_id": "sess-1",
+    "total_cost_usd": 0.4213,
+    "usage": {"input_tokens": 1},
+}
+
+
+def _write_stream(tmp_path, records, name="stream_fixture.jsonl"):
+    path = tmp_path / name
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def test_session_values_are_reported_from_the_final_result_record(sandbox):
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, DECOY_ASSISTANT_RECORD, RESULT_RECORD]
+    )
+    result = start(sandbox, extra_env={"FAKE_CLAUDE_STREAM": str(stream)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("RUNDIR="), lines
+    assert "COST_USD=0.4213" in lines, lines
+    assert "DURATION_MS=183422" in lines, lines
+    assert "TURNS=17" in lines, lines
+    assert lines[-1] == "EXIT=0", lines
+    assert lines.index("COST_USD=0.4213") > 0, "must come after RUNDIR="
+
+
+def test_no_result_record_reports_empty_session_values(sandbox):
+    """No `"type":"result"` record at all -> the three values are empty, not
+    missing lines, and EXIT= is still last."""
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, DECOY_ASSISTANT_RECORD], name="no_result.jsonl"
+    )
+    result = start(sandbox, extra_env={"FAKE_CLAUDE_STREAM": str(stream)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "COST_USD=" in lines, lines
+    assert "DURATION_MS=" in lines, lines
+    assert "TURNS=" in lines, lines
+    assert lines[-1] == "EXIT=0", lines
+
+
+def test_two_result_records_the_last_one_wins(sandbox):
+    first = dict(RESULT_RECORD, total_cost_usd=0.01, duration_ms=1, num_turns=1)
+    second = dict(RESULT_RECORD, total_cost_usd=0.4213, duration_ms=183422, num_turns=17)
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, first, second], name="two_results.jsonl"
+    )
+    result = start(sandbox, extra_env={"FAKE_CLAUDE_STREAM": str(stream)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "COST_USD=0.4213" in lines, lines
+    assert "DURATION_MS=183422" in lines, lines
+    assert "TURNS=17" in lines, lines
+
+
+def test_is_error_result_still_reports_its_values(sandbox):
+    error_result = dict(RESULT_RECORD, subtype="error_max_turns", is_error=True)
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, error_result], name="error_result.jsonl"
+    )
+    result = start(sandbox, extra_env={"FAKE_CLAUDE_STREAM": str(stream)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "COST_USD=0.4213" in lines, lines
+    assert "DURATION_MS=183422" in lines, lines
+    assert "TURNS=17" in lines, lines
+
+
+def test_nonzero_session_exit_code_still_reports_values_and_exit_stays_last(sandbox):
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, RESULT_RECORD], name="nonzero_exit.jsonl"
+    )
+    result = start(
+        sandbox,
+        extra_env={"FAKE_CLAUDE_STREAM": str(stream), "FAKE_CLAUDE_EXIT": "7"},
+    )
+    assert result.returncode == 7, result.stderr
+    lines = result.stdout.splitlines()
+    assert "COST_USD=0.4213" in lines, lines
+    assert "DURATION_MS=183422" in lines, lines
+    assert "TURNS=17" in lines, lines
+    assert lines[-1] == "EXIT=7", lines
+
+
+def test_reported_values_render_into_an_ato_event_block(sandbox):
+    """R3: the start script's three `KEY=value` lines feed straight into
+    `ato-event.py render`/`parse` unchanged -- end to end, no intermediate
+    translation."""
+    stream = _write_stream(
+        sandbox["tmp"], [SYSTEM_RECORD, DECOY_ASSISTANT_RECORD, RESULT_RECORD],
+        name="e2e.jsonl",
+    )
+    result = start(sandbox, extra_env={"FAKE_CLAUDE_STREAM": str(stream)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    values = dict(
+        line.split("=", 1)
+        for line in lines
+        if line.startswith(("COST_USD=", "DURATION_MS=", "TURNS="))
+    )
+    assert set(values) == {"COST_USD", "DURATION_MS", "TURNS"}, lines
+
+    render = subprocess.run(
+        [
+            sys.executable, str(ATO_EVENT_SCRIPT), "render",
+            "--event", "merged", "--package", "65",
+            "--cost-usd", values["COST_USD"],
+            "--duration-ms", values["DURATION_MS"],
+            "--turns", values["TURNS"],
+        ],
+        capture_output=True, text=True,
+    )
+    assert render.returncode == 0, render.stdout + render.stderr
+
+    parse = subprocess.run(
+        [sys.executable, str(ATO_EVENT_SCRIPT), "parse"],
+        input=render.stdout, capture_output=True, text=True,
+    )
+    assert parse.returncode == 0, parse.stdout + parse.stderr
+    parsed = json.loads(parse.stdout)
+    assert parsed["cost_usd"] == "0.4213"
+    assert parsed["duration_ms"] == "183422"
+    assert parsed["turns"] == "17"
 
 
 # --- gatekeeper-split mode (#53) ---------------------------------------------------
