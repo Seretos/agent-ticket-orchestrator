@@ -28,13 +28,11 @@ carry any project content in your context.
   (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
   → `owner/repo`), call `search_projects(query="<owner/repo>", limit=5)` and
   take the single result whose `path` equals it exactly. Pass its `id` on
-  **verbatim** (search matches case-insensitively, every other tool is
-  case-sensitive). No match or more than one → STOP and say which repo you
-  resolved and which configured ids `list_projects(fields="light")` returned
-  — never pick one. Thread the resolved id into every MCP call and every
-  subagent prompt. (Light `list_projects` returns only `{id, provider}`,
-  which is why it serves the STOP message but not the resolution: this skill
-  reads `path`, `permissions` and `local_path` from the resolved entry.)
+  **verbatim** (case rules: `search_projects`' tool description). No match
+  or more than one → STOP and say which repo you resolved and which
+  configured ids `list_projects(fields="light")` returned — never pick one.
+  Thread the resolved id into every MCP call and every subagent prompt. This
+  skill reads `path`, `permissions` and `local_path` from the resolved entry.
 - **Inside a project there is no parallelism**: one package, one worktree,
   one process at a time. Parallel `claude` starts race on `~/.claude.json`
   and parallel worktrees race on shared services; the night is long enough.
@@ -121,12 +119,12 @@ dependency as described next.
 2. For each package p, one call:
      get_ticket(project_id, p, include_relations=True, include_comments=False)
    blockers[p] = [r.ticket_id for r in relations if r.kind == "blocked_by"]
-   On a provider whose list_relation_kinds provider_support lacks blocked_by
-   (GitLab), ALSO read the newest "## Dependency (gatekeeper)" comment's
+   Only on a provider whose list_relation_kinds provider_support lacks
+   blocked_by, ALSO read the newest "## Dependency (gatekeeper)" comment's
    <!-- gatekeeper:deps v1 ... --> block via `list_comments(project_id,
    ticket_id=p, order="desc", limit=10, body_max_chars=600)` and take its
    blocked_by: line — same dumb key: value reader as adev:event, one more
-   block, no new mechanism. Skip that call entirely on github/azuredevops.
+   block, no new mechanism.
 3. Classify every blocker b (memoise per b for the whole run — see "When is
    a blocker resolved" below):
      - b resolved            -> drop the edge
@@ -262,14 +260,14 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
   `<n-1>`; the conflict retry in 2c handles the fallout. Do not stop the run,
   do not skip the remaining packages, and do not "fix" this by parallelising.
 
-- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"`: the write tools return a light echo of only a few identifying fields (`seretos-agents/agent-project-issues#314`), and this skill reads nothing else out of them but `pull_request.merged`.
+- `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"` — a light echo (`seretos-agents/agent-project-issues#314`) — and reads nothing out of them but `pull_request.merged`.
 - Branch name: `pkg/<id>-<slug>` (slug = title, lower-case, `[^a-z0-9]+` → `-`,
   trimmed, max 40 chars).
-- `environment_list()` first: if a worktree for that branch already exists
-  (a retry after a crash), reuse its `path`; otherwise
-  `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>", base=<default branch>)`
-  and take `path` from the returned record. Remember the `id` for removal,
-  but re-fetch it via `environment_list` if you ever removed and re-created.
+- Reuse the worktree a crashed attempt left for that branch, else create it
+  with `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>", base=<default branch>)`
+  — how to find and identify it: the agent-worktree skill, "Identity and
+  re-entry guarantees". Take `path` from the record, and keep its id for
+  removal.
 
 **b. Start the package session — yourself, from this turn.** No subagent
 wraps the process: a task-notification for a backgrounded Bash command is
@@ -324,7 +322,7 @@ the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 
 | latest event | you do |
 |---|---|
-| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")` with defaults (the project's default merge method; do not pass `merge_method`). Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged — a populated `merge_commit_sha` alone is a speculative pre-merge preview, not proof. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
+| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then → `Done`, then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
 | `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), → **Question**, `worktree_remove`. |
 
@@ -376,20 +374,22 @@ moment it is read, in board order, exactly like every other reaction in this ste
 **When the merge fails — classify before reacting.**
 
 A merge failure is not one thing. Call `get_pr(project_id, pr_id=<pr>)`
-**once** and read `pull_request`. If `mergeable_state` is `null` or
-`"unknown"`, `Bash("sleep 20")` once and fetch a **second and last** time —
-never a third. On Azure DevOps `mergeable_state` is permanently `null`; do
-not fetch a second time there, go straight to classifying from the error
-text. Then, in this order:
+**once** and read `pull_request` — its `mergeable_state` and the merge error
+text. The *what you see* entries below are the cause categories of the
+agent-project-issues skill, "Pull requests: why a merge is blocked", which
+maps each provider's values onto them. If the state is *not computed yet*,
+`Bash("sleep 20")` once and fetch a **second and
+last** time — never a third; where that skill says the value never fills, do
+not fetch a second time, classify from the error text. Then, in this order:
 
 | what you see | what it is | you do |
 |---|---|---|
-| `merged: true` (or `status: "merged"`) | already merged — a race, or a human merged it by hand | treat as a successful merge: → **Done**, `worktree_remove`. Note `merged externally` in the report. |
-| GitHub `mergeable_state: "dirty"`, or GitLab `detailed_merge_status` in {`conflict`, `need_rebase`}, or (any provider) the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
-| GitHub `mergeable_state: "behind"` | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
-| GitHub `mergeable_state` in {`blocked`, `draft`, `unstable`, `has_hooks`}, or GitLab `detailed_merge_status` in {`ci_must_pass`, `ci_still_running`, `blocked_status`, `discussions_not_resolved`, `not_approved`, `draft_status`, `broken_status`, `not_open`} | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
+| already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: → **Done**, `worktree_remove`. Note `merged externally` in the report. |
+| conflict, or the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
+| behind | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
+| gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
 | a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, move the card to **Question**, `worktree_remove`, record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
-| `mergeable_state` still uncomputed after the second fetch, and the error text names nothing | unknown | `add_comment`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
+| not computed yet, still after the second fetch, and the error text names nothing | unknown | `add_comment`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
 
 A **conflict is mechanical** and belongs to this system. Everything else on
 this table is a decision or a configuration, and belongs to a human. See
@@ -397,7 +397,7 @@ this table is a decision or a configuration, and belongs to a human. See
 
 **The pre-retry CI check — waiting is not failing.** A process can end on `failed` or a
 non-terminal event for a reason that has nothing to do with the package: it can die while a gating
-CI run is still `in_progress`, or even after that run has already finished green, simply because
+CI run has not finished yet, or even after that run has already finished green, simply because
 the session ended before it read the result. Two independent incidents escalated to Question on
 exactly this (`agent-ticket-orchestrator#8`): `agent-worktree` package #165 (one CI run green,
 the other still executing when the session exited) and `agent-project-issues` package #268 (**both**
@@ -406,19 +406,20 @@ to wait for, let alone decide). Before spending the `failed`/no-terminal-event r
 
 1. If the latest event carries a `pr:` value, or `list_prs(project_id, head="pkg/<id>-<slug>",
    status="open", limit=5)` finds one, call `get_pr(project_id, pr_id=<pr>)` once and
-   `list_pipeline_runs(project_id, commit_sha=<pr.head.sha>, limit=20)`.
-2. **Every run `conclusion == "success"`**, and `mergeable_state` does not read as a conflict per
+   `list_pipeline_runs(project_id, commit_sha=<pr.head.sha>, limit=20)`. Read the runs per the
+   agent-project-issues skill, "Reading a run's `status` and `conclusion`".
+2. **The head commit is CI-green**, and `mergeable_state` does not read as a conflict per
    the table above → the package is finished in every way that matters even though the process
    never said so. Go straight to the `ci-green` reaction (merge, verify `merged: true`, → Done)
    **without spending the retry**.
-3. **At least one run is still `status != "completed"`** → the package is only waiting.
+3. **At least one run has not finished** → the package is only waiting.
    `Bash("sleep 60")` once and re-check — the same one-more-look pattern the merge classification
    above already uses, never a third check here either. Still not finished → *now* the ordinary
    retry applies (step b, `attempt+1`); this is one extra look, not an unbounded wait, and it does
    not conflict with *Waiting rule* below (that rule is about never polling CI in place of the
    lower plugin's own Phase 6 loop — this is a single, bounded recheck of a process that has
    already ended, not a wait *inside* a running process).
-4. **Any run has failed** → this is a genuine `failed`; the ordinary retry applies unchanged.
+4. **A run failed** → this is a genuine `failed`; the ordinary retry applies unchanged.
 5. **No PR exists yet for this package** → nothing to check; the ordinary retry applies unchanged.
 
 **The rebase retry.** One attempt, once per package per run — a budget
@@ -428,13 +429,13 @@ and a conflict is a retry* below for why they do not share a counter).
 
 1. **Reuse the worktree.** You have not removed it yet at this point in 2c,
    and it is on `pkg/<id>-<slug>` with the package's commits. Do **not**
-   remove and re-create it: a worktree `id` is not stable across remove +
-   create. If it is genuinely gone (this `run` resumed after a crash),
-   `environment_list()` and reuse the entry for that branch; only if there is
-   none, `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>")` —
-   **omit `base`**, the branch already exists remotely — then re-read the
-   `id` from a fresh `environment_list()`. Never re-cut the branch from the
-   default branch: that discards the package's commits.
+   remove and re-create it. If it is genuinely gone (this `run` resumed after
+   a crash), reuse the worktree left for that branch; only if there is none,
+   `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>")` —
+   **omit `base`**, the branch already exists remotely. Finding it and its
+   id: the agent-worktree skill, "Identity and re-entry guarantees". Never
+   re-cut the branch from the default branch: that discards the package's
+   commits.
 2. **Dispatch, exactly as in step 2b**, same script, `attempt+1`. No extra
    argument to the script or the lower plugin: the lower plugin orients
    itself on the branch (an open PR plus green CI on this exact HEAD plus a
@@ -475,7 +476,7 @@ the *first* `adev:event`, before every decision, including a triage-driven
 re-dispatch and every escalation.
 
 **d. Worktree removal.** Always `worktree_remove(environment_id=…)`; on a
-Windows directory lock retry once with `kill_blocking_processes=true`; if it
+Windows directory lock follow the agent-worktree skill's recipe for it; if it
 still fails, record the path under *manual cleanup* in the report and
 continue. A stuck worktree never blocks the next package.
 

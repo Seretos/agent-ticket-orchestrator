@@ -65,9 +65,11 @@ has not verified>
 
 Determine the label: `bug` when the symptom is a hang, crash, wrong result,
 slowness, or leak; no label otherwise -- the `bundler` decides the rest once
-the ticket reaches Backlog. Check `list_labels(project_id)` first so the
-label already exists on the project; if `bug` is not among the results, file
-without a label and say so in the Output, rather than adding one yourself.
+the ticket reaches Backlog. Check `list_labels(project_id)` first — why a
+label must be in the catalog before a ticket carries it: the
+agent-project-issues skill, "Labels: create the catalog entry first". If
+`bug` is not among the results, file without a label and say so in the
+Output, rather than adding one yourself.
 
 File exactly one ticket: `create_ticket(project_id, title=<from the
 symptom>, labels=[...], body=<the five-heading body above>)`.

@@ -36,14 +36,12 @@ projects to the point where finding the asked-about tickets was work).
   (`git@github.com:owner/repo.git` → `owner/repo`; `https://…/owner/repo.git`
   → `owner/repo`), call `search_projects(query="<owner/repo>", limit=5)` and
   take the single result whose `path` equals it exactly. Pass its `id` on
-  **verbatim** (search matches case-insensitively, every other tool is
-  case-sensitive). No match or more than one → STOP and say which repo you
-  resolved and which configured ids `list_projects(fields="light")` returned
-  — never pick one. Thread the resolved id into every MCP call and every
-  subagent prompt. (Light `list_projects` returns only `{id, provider}`,
-  which is why it serves the STOP message but not the resolution: this skill
-  reads `path`, `permissions`, `local_path` and `provider` from the resolved
-  entry.)
+  **verbatim** (case rules: `search_projects`' tool description). No match
+  or more than one → STOP and say which repo you resolved and which
+  configured ids `list_projects(fields="light")` returned — never pick one.
+  Thread the resolved id into every MCP call and every subagent prompt. This
+  skill reads `path`, `permissions`, `local_path` and `provider` from the
+  resolved entry.
 - The project's `local_path` (read from the resolved project entry) — handed to the subagents
   so they can look at the code.
 
@@ -67,7 +65,8 @@ projects to the point where finding the asked-about tickets was work).
    start of Step 2, and its result is kept for the rest of the pass:
    `provider_support` for this project's `provider` (read from the resolved project entry)
    decides the dependency-writing path in Step 3.5. A provider without
-   `blocked_by` (GitLab) is **not** a stop condition — see Step 3.5's
+   `blocked_by` (which ones: the agent-project-issues skill, "Relations:
+   direction matters") is **not** a stop condition — see Step 3.5's
    fallback.
 
 ## Step 1 — enumerate the Backlog, and your own answered Question cards
@@ -83,10 +82,10 @@ puts the ticket back into the next pass unchanged. The exclusion happens
 here, in the two calls above, and nowhere else — an ignored ticket never
 reaches the bundler, the clarifier, an epic, a comment or a column move, so
 no later step checks for the label. That covers your own answered Question
-cards too: an ignored one is not re-bundled. The filter needs no label in the
-repository's catalog (verified on GitHub, 2026-09-21: `not_labels` naming a
-label that does not exist returns the unfiltered list, no error) — you never
-create the label, never add it and never remove it.
+cards too: an ignored one is not re-bundled. How `not_labels` treats a label
+missing from the catalog is in `list_tickets`' tool description
+(agent-project-issues#363) — you never create the label, never add it and
+never remove it.
 
 Two more calls, for the report only — their result feeds Step 5's `ignored`
 line and nothing else:
@@ -309,8 +308,10 @@ For each ticket whose verdict is `lane: mixed` with `deliverables:` a
 number:
 
 1. **Label.** `list_labels(project_id)`, then
-   `create_label(project_id, "lane:prose")` if absent — GitHub 404s on an
-   unknown label at `create_ticket` time.
+   `create_label(project_id, "lane:prose")` if absent — every label this
+   skill applies is created in the catalog first, for the reason the
+   agent-project-issues skill gives in "Labels: create the catalog entry
+   first".
 2. **Create the prose ticket.** No `custom_fields`, so it lands in Backlog.
    The body is exactly the two headings `templates/ISSUE_TEMPLATE/task.yml`
    requires:
@@ -354,8 +355,7 @@ number:
    Object by replying on this ticket.")
    ```
 
-   The MCP prepends `#ai-generated`; do not add it yourself. The block is
-   read by the same dumb `key: value` reader as `adev:event`.
+   The block is read by the same dumb `key: value` reader as `adev:event`.
 
 **`lane: mixed` with `deliverables: none`** is the one shape nobody can
 argue from the paths — both halves were reported as accompanying, so there
@@ -371,8 +371,7 @@ is still `mixed` / `deliverables: none`, treat it as `code` and record
 
 For each accepted package with **two or more** tickets:
 
-1. `list_labels(project_id)` — if no `epic` label exists, `create_label`
-   (GitHub 404s on an unknown label at `create_ticket` time).
+1. `list_labels(project_id)` — if no `epic` label exists, `create_label`.
 2. `create_ticket(project_id, title=<bundler title>, labels=["epic"], template="epic", body=…)`
    where the body has exactly two headings, matching the required fields of
    `templates/ISSUE_TEMPLATE/epic.yml`:
@@ -389,10 +388,9 @@ For each accepted package with **two or more** tickets:
    Omit `custom_fields` so the epic lands in Backlog like any new ticket.
 3. `list_relation_kinds()` once, then link the epic to each child with
    `add_relation(project_id, ticket_id=<epic>, kind="parent", target="#<child>")`
-   — `ticket_id` is always the *from* end, so `kind="parent"` on the epic
-   makes the epic the parent. (If the provider matrix lists only `child`, call
-   it from the child side instead: `ticket_id=<child>, kind="child",
-   target="#<epic>"`.)
+   — which end is which, and what to call when the provider offers only the
+   other kind: the agent-project-issues skill, "Relations: direction
+   matters".
 4. **Never close the originals.** They stay open in their column; only the
    epic moves from now on. The lower plugin closes them via `Closes #<n>` in
    the PR when the epic is done.
@@ -449,7 +447,7 @@ pair (a deterministic tie-break, not a judgement) and `#b` the other:
    With `"slices": []`, option (a) is absent, (b) carries *(recommended)*,
    and the `**About:**` line adds that no split into user-visible slices
    was found. The block is read by the same dumb `key: value` reader as
-   `adev:event`. The MCP prepends `#ai-generated`; do not add it yourself.
+   `adev:event`.
 3. **Point the other card at it:** one comment on `#b`, heading
    `## Clarification needed (gatekeeper)`, the single line "This ticket and
    #a are asked about together — the question and its proposal are on #a;
@@ -560,8 +558,7 @@ Each result ends with a status line:
   ```
 
   heading `## Clarification needed (gatekeeper)`, then the `clarifier`'s
-  `## Open Questions` section verbatim. The MCP prepends `#ai-generated`; do
-  not add it yourself.
+  `## Open Questions` section verbatim.
 
   Then move the package ticket to **Question**:
 
@@ -659,14 +656,13 @@ for each raw target #t:
   3. Validate. get_ticket(project_id, target):
      - not found     -> record "dependency #t not found", write nothing
      - status closed -> record "dependency #t already closed", write nothing
-  4. Write, from the DEPENDENT side (ticket_id is always the "from" end):
+  4. Write, from the DEPENDENT side (direction and per-provider kinds: the
+     agent-project-issues skill, "Relations: direction matters"):
      - "blocked_by" in provider_support[<this project's provider>]
        (github, azuredevops):
          add_relation(project_id, ticket_id=<this package>,
                        kind="blocked_by", target="#<target>")
-     - otherwise (GitLab supports neither blocked_by nor blocks; GitHub in
-       turn has no relates_to, so there is no portable kind and this branch
-       is permanent):
+     - otherwise (GitLab) — this skill's own fallback convention:
          add_relation(project_id, ticket_id=<this package>,
                        kind="relates_to", target="#<target>")
        plus one comment on this package:
@@ -776,9 +772,8 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    package already carries the `regression-chain` label, do nothing here; the
    chain was recorded on an earlier pass and re-posting it is noise on
    exactly the ticket that already has too much history.
-2. **Label.** (Every `update_ticket` here passes `response="light"` — the write tools return a light echo by default since `seretos-agents/agent-project-issues#314`, and this skill reads nothing from them.) `list_labels(project_id)` — `create_label(project_id,
-   "regression-chain")` if absent (GitHub 404s on an unknown label at write
-   time) — then `update_ticket(project_id, ticket_id=<package>,
+2. **Label.** `list_labels(project_id)` — `create_label(project_id,
+   "regression-chain")` if absent — then `update_ticket(project_id, ticket_id=<package>,
    labels_add=["regression-chain"], response="light")`.
 3. **Comment.** `add_comment(project_id, ticket_id=<package>, body=…)`:
 
@@ -801,8 +796,7 @@ Runs only when the frame block has `chain: regression-chain:#a,#b[,…]`.
    ```
 
    Content comes from the clarifier's `### Frame` lines, verbatim — you have
-   no code access and must not re-derive it. The MCP prepends
-   `#ai-generated`; do not add it yourself.
+   no code access and must not re-derive it.
 4. The clarifier's root-cause mandate is already discharged: it detected the
    chain and its own protocol obliged it to **reframe and stay CLEAR** —
    the reframe is applied and reported through this comment, never asked as
@@ -952,7 +946,7 @@ Checked: bundling against the open Backlog, then clarification against ticket, c
 Moved: Backlog → Planned. Planned → Todo stays a human move.
 ```
 
-The MCP prepends the `#ai-generated` marker; do not write it yourself. Pass no `response=` argument, and read no comments back to verify the post.
+Pass no `response=` argument, and read no comments back to verify the post.
 
 Only the **package ticket** moves. Children of an epic stay exactly where they
 are (Backlog) — the board shows one card per unit of work, and the `run`
