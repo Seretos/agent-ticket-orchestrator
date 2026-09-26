@@ -30,6 +30,7 @@ a real ticket.
 import pathlib
 import re
 
+import pytest
 import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -320,14 +321,40 @@ def test_run_reads_relations_before_dispatch():
     assert "blocked_by" in section
 
 
-def test_run_defines_resolved_as_done_column_or_closed_off_board():
-    text = _read(RUN)
+# --- #56 R7: forward-compatible with #45's future Done-column removal ------
+# #56 merges before #45 rewrites skills/run/SKILL.md to drop Done as a board
+# column; the suite must stay green on today's text (Done still present) and
+# on #45's eventual text (Done gone). These two helpers carry the shared
+# assertion so both the real-file test and the fixture-based driving test
+# below exercise the same forward-compatible rule.
+
+def _assert_blocker_resolved_by_closed(text: str) -> None:
+    """The 'resolved' definition requires `closed` + `Closes #<n>`; it no
+    longer requires (but does not forbid) `Done`/`custom_fields`, since #45
+    removes that column-based rule."""
     assert "### When is a blocker resolved" in text
     section = _slice(text, "### When is a blocker resolved", "### 2. Per package, sequentially")
-    assert "custom_fields" in section
-    assert "Done" in section
-    assert "closed" in section
+    assert re.search(r"\bclosed\b", section)
     assert "Closes #<n>" in section
+
+
+_POST_45_BLOCKER_FIXTURE = (
+    "### When is a blocker resolved\n\n"
+    "A blocker `#b` counts as **resolved** when **any** of:\n\n"
+    "1. `run` itself resolved `#b` earlier in this very run. Keep a\n"
+    "   `done_this_run` set; it is authoritative and needs no re-read.\n"
+    "2. `#b` is `status: closed` **and** its board column is not one of\n"
+    "   `Backlog`, `Planned`, `Todo`, `Doing` -- a ticket closed without ever\n"
+    "   having been queued (a duplicate, a wontfix, a hand-closed ticket, or\n"
+    "   an epic child closed by a `Closes #<n>`). A ticket that is closed\n"
+    "   while sitting in `Todo` is a contradiction: treat it as **not**\n"
+    "   resolved and record it.\n\n"
+    "### 2. Per package, sequentially\n"
+)
+
+
+def test_run_defines_resolved_as_closed():
+    _assert_blocker_resolved_by_closed(_read(RUN))
 
 
 def test_run_orders_topologically_with_board_order_tiebreak():
@@ -2700,17 +2727,19 @@ def test_run_precondition_3_still_reads_pulls_merge():
     assert re.search(r"read\s+`permissions\.pulls\.merge`", p3)
 
 
-def test_run_required_columns_drop_review():
-    """(#31 R2) Precondition 2 lists Todo/Doing/Done/Question only; existing
-    boards keep an extra column, which run neither reads nor requires. The
-    clause is phrased without the capitalised column name on purpose, so the
-    file-wide absence test below can hold at the same time."""
-    text = _read(RUN)
+def _assert_run_required_columns(text: str) -> None:
+    """(#31 R2, forward-compatible per #56 R7) Precondition 2 lists
+    Todo/Doing/Question, with Done optional (present today, gone once #45
+    lands) and nothing else in its place; existing boards keep an extra
+    column, which run neither reads nor requires. The clause is phrased
+    without the capitalised column name on purpose, so the file-wide absence
+    test below can hold at the same time."""
     pre = _slice(text, "## Preconditions (per project)", "3. **Merge permission.**")
     item2 = pre[pre.index("2. **Board columns.**"):]
     m = re.search(r"logical\s+columns\s+((?:`\w+`[,\s]*(?:and\s+)?)+)", item2)
     assert m, "Precondition 2 must list the required logical columns"
-    assert re.findall(r"`(\w+)`", m.group(1)) == ["Todo", "Doing", "Done", "Question"], m.group(1)
+    cols = re.findall(r"`(\w+)`", m.group(1))
+    assert [c for c in cols if c != "Done"] == ["Todo", "Doing", "Question"], cols
     assert not re.search(r"\bReview\b", pre)
     sentences = re.split(r"(?<=[.!?])\s+", " ".join(item2.split()))
     assert any(
@@ -2718,6 +2747,38 @@ def test_run_required_columns_drop_review():
         and re.search(r"neither reads nor requires|does not read|never reads", sn, re.I)
         for sn in sentences
     ), "one sentence of Precondition 2 must say existing boards with an extra column stay valid and unread"
+
+
+_POST_45_COLUMNS_FIXTURE = (
+    "## Preconditions (per project)\n\n"
+    "1. **Project resolution.** Resolve the project entry.\n"
+    "2. **Board columns.** `list_board_columns(project_id)` must contain the logical\n"
+    "   columns `Todo`, `Doing`, `Question`. Keep the\n"
+    "   `logical -> native` map; every board write uses the *native* value. Missing\n"
+    "   column -> STOP for this project with the missing name. Existing boards\n"
+    "   that still carry an extra column keep it: this skill neither reads nor\n"
+    "   requires it.\n"
+    "3. **Merge permission.** From the resolved project entry read `permissions.pulls.merge`.\n"
+)
+
+
+def test_run_required_columns_drop_review():
+    _assert_run_required_columns(_read(RUN))
+
+
+@pytest.mark.parametrize("kind", ["columns", "blocker"])
+def test_run_contract_survives_done_as_closed(kind):
+    """(#56 R7) Each rule must hold both on today's SKILL.md (Done still a
+    board column / still checked via custom_fields) and on a fixture shaped
+    like #45's future rewrite (Done gone entirely) -- #56 merges first and
+    cannot predict #45's exact prose, only that Done becomes optional/absent
+    while `closed` + `Closes #<n>` remain the blocker-resolution rule."""
+    if kind == "columns":
+        _assert_run_required_columns(_read(RUN))
+        _assert_run_required_columns(_POST_45_COLUMNS_FIXTURE)
+    else:
+        _assert_blocker_resolved_by_closed(_read(RUN))
+        _assert_blocker_resolved_by_closed(_POST_45_BLOCKER_FIXTURE)
 
 
 def test_review_column_is_gone_from_the_contract():
