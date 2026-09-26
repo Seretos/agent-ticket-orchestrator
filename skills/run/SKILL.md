@@ -335,13 +335,26 @@ and the 2a gate — is the same for both lanes. A re-dispatch of a package
 
 The script owns the mechanics (run directory, launch lock around the start,
 stream/stderr files, exit marker — see its header) and prints `RUNDIR=…`
-first and `EXIT=<code>` last. Then **stop and wait for the completion
+first, then `COST_USD=<v>`, `DURATION_MS=<v>` and `TURNS=<v>`, and
+`EXIT=<code>` last. Then **stop and wait for the completion
 notification**, as described in the *Waiting rule* below. Do not poll the ticket, do not read the stream, do not start
 a second package. CI rounds and three review rounds all
-happen inside that process; hours are normal. `EXIT` and `RUNDIR` are
-informational; you never read `stream.jsonl` into your context (the
-orchestrator stays free of project content) — `tail -n 3 "<RUNDIR>/stderr.txt"`
-is allowed to classify a crash.
+happen inside that process; hours are normal.
+
+**Keep this session's three values.** From the completion notification's
+output, take the values of `COST_USD=`, `DURATION_MS=` and `TURNS=` for this
+package and this attempt, and keep them until the comment that reacts to this
+session's end is posted — they go on that comment's `ato:event` block (see
+`<session>` in 2c). A line printed with nothing after `=` is an empty value;
+keep it empty and never guess one. This applies to every package session you
+start through this script — the first start, any `attempt+1` re-dispatch and
+the rebase retry — and each new start replaces the previous session's values.
+The gatekeeper split session of 2c prints the same lines, but it is not a
+package session: its values are not kept and go on no block. The script's output
+is the only source for them: you never read `stream.jsonl` into your context
+(the orchestrator stays free of project content), not even for these numbers.
+`EXIT` and `RUNDIR` are informational; `tail -n 3 "<RUNDIR>/stderr.txt"` is
+allowed to classify a crash.
 
 **c. Read the ticket, react.** The exit code is informational; the truth is
 the ticket. Call
@@ -364,14 +377,26 @@ External tooling counts them from that block, never from the human lines
 around it. The block comes only from the bundled script, never typed by hand:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/run/ato-event.py" render --event <event> --package <package id> [--reason <reason>] [--pr <n>] [--merge-sha <sha>]
+python "${CLAUDE_PLUGIN_ROOT}/scripts/run/ato-event.py" render --event <event> --package <package id> [--reason <reason>] [--pr <n>] [--merge-sha <sha>] [--cost-usd <v>] [--duration-ms <v>] [--turns <v>]
 ```
 
 `<package id>` is the package ticket's id — the epic's id when the package is
 an epic. Each site below spells out its exact arguments in the short form
-`ato-event.py render …`; always run it as the full command above. Use exactly
-the values a site names and no others (the script owns the vocabulary,
-`agent-ticket-orchestrator#63`). Put
+`ato-event.py render …`; always run it as the full command above. Pass the
+values a site names — the event, the reason and the other arguments come from
+the site, never from you (the script owns the vocabulary,
+`agent-ticket-orchestrator#63`) — plus `<session>`, which every site ends with.
+
+**`<session>` stands for `--cost-usd <v> --duration-ms <v> --turns <v>`**,
+filled from the one package session whose end this comment reacts to — the
+values kept in step 2b. Each session's values go on at most one block: once a
+comment carrying them is posted, they are spent. Fill `<session>` with empty
+values (`--cost-usd "" --duration-ms "" --turns ""`) when no package session of
+this run whose values are still unposted precedes the comment — a Step 0
+pre-flight reaction to an earlier run's PR, the 2a gate's repeated merge of a
+package whose earlier comment already carried its values, or the
+`split-failed` escalation after a gatekeeper split session. Never copy another
+session's numbers into an empty slot, and never add sessions together. Put
 the script's stdout verbatim into the body of the comment that site names,
 **after** that comment's existing text; the block replaces no line of it. If
 the script exits non-zero, post the comment anyway with its `error: …` line
@@ -384,7 +409,7 @@ Then react to the latest event:
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then **record the merge** (below), then **close the package ticket** (below), then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. Every other place in this skill that runs "the `ci-green` reaction" — Step 0, the 2a gate, the pre-retry CI check, the rebase retry — runs this whole row, the merge record included. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
-| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), followed by the block of `ato-event.py render --event escalated --package <package id> --reason failed`, → **Question**, `worktree_remove`. |
+| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), followed by the block of `ato-event.py render --event escalated --package <package id> --reason failed <session>`, → **Question**, `worktree_remove`. |
 
 **Close the package ticket — only after a verified merge.** One call on the
 package ticket, the epic when the package is an epic:
@@ -408,7 +433,7 @@ finished package; there is no finished column to move the card to.
 the line `Merged PR #<pr> (<sha>).`, followed by the block of
 
 ```
-ato-event.py render --event merged --package <package id> --pr <pr> --merge-sha <sha>
+ato-event.py render --event merged --package <package id> --pr <pr> --merge-sha <sha> <session>
 ```
 
 `<sha>` is `pull_request.merge_commit_sha` from the `merge_pr` response when
@@ -447,7 +472,7 @@ So instead of setting the package aside:
    `add_comment(project_id, ticket_id=<package>, body=…)` with heading
    `## Blocked triage (run)`, the question, the chosen option, and the reasoning, followed by
    the block of
-   `ato-event.py render --event triage-answered --package <package id>`
+   `ato-event.py render --event triage-answered --package <package id> <session>`
    — then immediately re-dispatch (step 2b, same script, `attempt+1`, same worktree). The lower plugin's
    `context-extractor` re-reads the ticket transcript on the next attempt and picks the answer up;
    no change to its contract. Do **not** wait for every other Todo package to have its turn first —
@@ -458,7 +483,7 @@ So instead of setting the package aside:
    1. `add_comment(project_id, ticket_id=<package>, body=…)` with heading
       `## Blocked triage (run)`, the question, the chosen option, the reasoning, and the
       `triage:split v1` block copied verbatim from triage's answer, followed by the block of
-      `ato-event.py render --event triage-answered --package <package id>`.
+      `ato-event.py render --event triage-answered --package <package id> <session>`.
       The `triage:split v1` block is what the gatekeeper reads; it ignores the `ato:event`
       block, which carries a different marker.
    2. `worktree_remove(environment_id=<id>)`. Do not move the card — it stays in **Doing** — and
@@ -485,13 +510,13 @@ So instead of setting the package aside:
       once, and the next run finds them.
    5. No such comment, or its block carries no `code_ticket:` → `add_comment` with one line — *"Escalated: the gatekeeper split session
       ended without a lane split — see the `triage:split` block above."* — followed by the block of
-      `ato-event.py render --event escalated --package <package id> --reason split-failed`,
+      `ato-event.py render --event escalated --package <package id> --reason split-failed <session>`,
       → **Question**, note `split-failed`. The `triage:split v1` block stays on the ticket, so the next gatekeeper pass a human starts
       finds the card and applies the split into Planned.
 4. **`ESCALATE`** → `add_comment` with the original question plus one line — *"Escalated: not
    answerable from ticket, comments or code — see the blocked event above."* — followed by the
    block of
-   `ato-event.py render --event escalated --package <package id> --reason blocked`,
+   `ato-event.py render --event escalated --package <package id> --reason blocked <session>`,
    → **Question**, `worktree_remove`. Do not spend a retry session on a question triage already told you a retry
    cannot resolve.
 5. **Triage once per package per run.** Before dispatching triage, check whether this package's
@@ -499,7 +524,7 @@ So instead of setting the package aside:
    (`list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`,
    search for the heading). If it does, a second `blocked` event goes straight to
    the `ESCALATE` reaction above, with its block rendered by
-   `ato-event.py render --event escalated --package <package id> --reason triage-reblocked`
+   `ato-event.py render --event escalated --package <package id> --reason triage-reblocked <session>`
    in place of the `--reason blocked` one — a triage-answered redispatch that blocks again means the answer
    did not hold or a materially different question surfaced, and either way a second guess is not
    this system's to make alone. The split session of item 3 inherits this bound: it takes the
@@ -525,9 +550,9 @@ not fetch a second time, classify from the error text. Then, in this order:
 | already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: record the merge (the `get_pr` above supplies `merge_commit_sha`), close the package ticket, `worktree_remove`. Note `merged externally` in the report. |
 | conflict, or the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
 | behind | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
-| gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
-| a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed`, move the card to **Question**, `worktree_remove`, record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
-| not computed yet, still after the second fetch, and the error text names nothing | unknown | `add_comment` carrying the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
+| gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
+| a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, `worktree_remove`, record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
+| not computed yet, still after the second fetch, and the error text names nothing | unknown | `add_comment` carrying the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
 
 A **conflict is mechanical** and belongs to this system. Everything else on
 this table is a decision or a configuration, and belongs to a human. See
@@ -589,7 +614,7 @@ and a conflict is a retry* below for why they do not share a counter).
    - `ci-green` and the merge fails **again** → stop. `add_comment` naming
      both merge attempts, both `mergeable_state` values and both `RUNDIR`s,
      followed by the block of
-     `ato-event.py render --event escalated --package <package id> --reason merge-conflict`
+     `ato-event.py render --event escalated --package <package id> --reason merge-conflict <session>`
      → **Question**, `worktree_remove`, note `merge-conflict` in the report.
    - `blocked` → the resolution needs a product decision (two packages
      implemented incompatible behaviour) — the rebase retry's own single
@@ -599,11 +624,11 @@ and a conflict is a retry* below for why they do not share a counter).
      with one line — *"Escalated after a rebase attempt: the conflict
      resolution is a decision — see the blocked event above."* — followed by
      the block of
-     `ato-event.py render --event escalated --package <package id> --reason rebase-decision`
+     `ato-event.py render --event escalated --package <package id> --reason rebase-decision <session>`
      → **Question**, `worktree_remove`.
    - `failed`, or no terminal event → `add_comment` with the failure summary
      and both `RUNDIR`s, followed by the block of
-     `ato-event.py render --event escalated --package <package id> --reason failed`
+     `ato-event.py render --event escalated --package <package id> --reason failed <session>`
      → **Question**, `worktree_remove`. **Do not** spend
      the `failed`-retry budget on a repair session — it already had its own
      budget, in step 2.
