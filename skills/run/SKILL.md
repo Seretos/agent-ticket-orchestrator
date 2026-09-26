@@ -346,7 +346,7 @@ output, take the values of `COST_USD=`, `DURATION_MS=` and `TURNS=` for this
 package and this attempt, and keep them until the comment that reacts to this
 session's end is posted — they go on that comment's `ato:event` block (see
 `<session>` in 2c). A line printed with nothing after `=` is an empty value;
-keep it empty and never guess one. This applies to every package session you
+keep it empty and never guess one. This applies to each package session you
 start through this script — the first start, any `attempt+1` re-dispatch and
 the rebase retry — and each new start replaces the previous session's values.
 The gatekeeper split session of 2c prints the same lines, but it is not a
